@@ -1,40 +1,71 @@
 # Maintainer: zlicdt <xkicdt1@gmail.com>
 
 pkgname=open-orpheus
-pkgver=0.16.0
-pkgrel=1
+pkgver=0.16.2
+pkgrel=2
 pkgdesc="An open-source implementation of Netease Cloud Music's Orpheus browser host."
 arch=('x86_64')
-url="https://github.com/YUCLing/open-orpheus"
+url="https://github.com/BIGGASSS/open-orpheus"
 license=('MIT')
-arch=('x86_64')
+options=('!strip' '!debug')
 depends=(
+    'alsa-lib'
+    'at-spi2-core'
     'gtk3'
+    'libdrm'
     'libnotify'
+    'libxcb'
+    'mesa'
     'nss'
     'xdg-utils'
-    'at-spi2-core'
-    'libdrm'
-    'mesa'
-    'libxcb'
 )
-optdepends=('kde-cli-tools')
-makedepends=('libarchive')
-source=(
-    "${pkgname}_${pkgver}_amd64.deb::https://github.com/YUCLing/open-orpheus/releases/download/v${pkgver}/${pkgname}_${pkgver}_amd64.deb"
-    "LICENSE"
+optdepends=('kde-cli-tools: file deletion support (kioclient)')
+makedepends=(
+    'nodejs>=24'
+    'pnpm'
+    'rust'
+    'wasm-bindgen'
 )
-sha256sums=(
-    'bdcb4559b1f1488ec9ba4dfd4cf15a1b41b1bc3abb26963cf9f828650f037ffd'
-    '4499595d653b7a9e65001bb09239e6fb5d33e650d1f9db808ce87905021e9ff8'
-)
+_commit=10194a6157e7e111b808fbf8059ab91672fc53d8
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/${_commit}.tar.gz")
+sha256sums=('b72e4dbb779360e6bdc081968c4fe928dd097cd52c1a0429c94a4ca831725daf')
 
 prepare() {
-    ar x ${pkgname}_${pkgver}_amd64.deb
+    cd "${pkgname}-${_commit}"
+    pnpm install --frozen-lockfile
 }
 
-# Thank for wustdsh's suggestion
+build() {
+    cd "${pkgname}-${_commit}"
+    pnpm build:modules
+    pnpm package -- --arch=x64
+}
+
 package() {
-    bsdtar -xf data.tar.zst -C ${pkgdir} --no-same-owner
-    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/%{pkgname}/LICENSE"
+    cd "${pkgname}-${_commit}"
+
+    install -d "${pkgdir}/opt/${pkgname}"
+    cp -a out/open-orpheus-linux-x64/. "${pkgdir}/opt/${pkgname}/"
+    chmod 755 "${pkgdir}/opt/${pkgname}"
+
+    install -d "${pkgdir}/usr/bin"
+    ln -s "/opt/${pkgname}/open-orpheus" "${pkgdir}/usr/bin/${pkgname}"
+
+    install -Dm644 assets/icon_256.png \
+        "${pkgdir}/usr/share/icons/hicolor/256x256/apps/${pkgname}.png"
+    install -Dm644 LICENSE \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+    install -Dm644 /dev/stdin \
+        "${pkgdir}/usr/share/applications/${pkgname}.desktop" <<EOF
+[Desktop Entry]
+Name=Open Orpheus
+Comment=An open-source Netease Cloud Music client
+Exec=${pkgname} %U
+Icon=${pkgname}
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Network;
+StartupWMClass=open-orpheus
+EOF
 }

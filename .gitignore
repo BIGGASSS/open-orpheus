@@ -91,6 +91,13 @@ typings/
 # Electron-Forge
 out/
 
+# makepkg
+/aur/pkg/
+/aur/src/
+/aur/*.pkg.tar.*
+/aur/*.src.tar.*
+/aur/open-orpheus-*.tar.gz
+
 # Rust
 target
 
