@@ -1,7 +1,6 @@
 import { FSWatcher, watch } from "node:fs";
 import {
   copyFile,
-  cp,
   mkdir,
   readdir,
   readFile,
@@ -33,7 +32,7 @@ import {
   normalizePath,
   sanitizeRelativePath,
 } from "../util";
-import { webDb } from "../database";
+import { nativeDb, webDb } from "../database";
 import {
   CacheTrackMeta,
   type PlayCacheConfig,
@@ -44,47 +43,49 @@ import createCacheManager, {
   playCacheManager,
 } from "../cache";
 import { toError } from "../../util";
-import { commentToID3Json, ID3JsonToComment } from "../id3";
-import globalLogger from "../logger";
+import { ID3JsonToComment } from "../id3";
+import {
+  completedDownloadContexts,
+  finalizeAudioFile,
+  indexKeyForFile,
+  metadataForFinalization,
+  normalizeDownloadRelativePath,
+  readIndexedDownloadInfo,
+  type ScannedDownloadInfo,
+} from "../cloudDrive";
+import { SqliteDownloadMetadataIndex } from "../cloudDriveIndex";
 
-type DownloadScannerItem = {
-  comment: string; // comment added by addid3
-  creation_time: number; // timestamp
-  last_accessed: number;
-  last_modified: number;
-  path: string; // path relative to download dir
-  size: number;
-};
+type DownloadScannerItem = ScannedDownloadInfo;
+
+function downloadMetadataIndex() {
+  if (!download) throw new Error("Download storage is not initialized");
+  return new SqliteDownloadMetadataIndex(nativeDb, download);
+}
+
+async function clearDownloadIndexForFile(filePath: string) {
+  if (!download) return;
+  const key = indexKeyForFile(download, filePath);
+  if (!key) return;
+  try {
+    await downloadMetadataIndex().delete(key);
+  } catch (err) {
+    LOGGER.warn(
+      { err: toError(err), filePath, indexKey: key },
+      "Failed to clean Cloud Drive metadata index"
+    );
+  }
+}
 
 async function readDownloadedMusicInfo(
   file: string,
-  base: string | undefined = undefined
+  base: string
 ): Promise<DownloadScannerItem | undefined> {
-  const filePath = normalizePath(base ?? "", file);
-  let comment;
-  try {
-    const taggedFile = await MusicFile.load(filePath);
-    const json = commentToID3Json(taggedFile.comment);
-
-    if (!json) return;
-
-    comment = json;
-  } catch (error) {
-    globalLogger.error(
-      { name: "music-info-reader", file: filePath, err: error },
-      "Error reading ID3 tags"
-    );
-    return;
-  }
-  const statResult = await stat(filePath);
-  return {
-    comment,
-    creation_time: statResult.birthtimeMs,
-    last_accessed: statResult.atimeMs,
-    last_modified: statResult.mtimeMs,
-    path: file,
-    size: statResult.size,
-  };
+  return readIndexedDownloadInfo(
+    file,
+    base,
+    downloadMetadataIndex(),
+    async (filePath) => (await MusicFile.load(filePath)).comment
+  );
 }
 
 let downloadDirWatcher: FSWatcher | null = null;
@@ -127,24 +128,35 @@ registerCallHandler<[string, string, string], [string, string]>(
           recursive: true,
           ignore: (path) => !(mime.getType(path) ?? "").startsWith("audio/"),
         },
-        async (eventType, filename) => {
-          if (
-            filename &&
-            !(await fileExists(join(downloadDir, filename))) &&
-            !event.sender.isDestroyed()
-          ) {
-            event.sender.send(
-              "channel.call",
-              "storage.onfiledeleted",
-              filename
+        (eventType, filename) => {
+          void (async () => {
+            if (!filename || (await fileExists(join(downloadDir, filename))))
+              return;
+            await clearDownloadIndexForFile(join(downloadDir, filename));
+            if (!event.sender.isDestroyed()) {
+              event.sender.send(
+                "channel.call",
+                "storage.onfiledeleted",
+                filename
+              );
+            }
+          })().catch((err) => {
+            LOGGER.warn(
+              { err: toError(err), eventType, filename },
+              "Failed to process download directory change"
             );
-          }
+          });
         }
       );
       watcher.on("error", (err) => {
         LOGGER.error({ err }, "Download directory watcher encountered error");
       });
       downloadDirWatcher = watcher;
+      event.sender.once("destroyed", () => {
+        if (downloadDirWatcher !== watcher) return;
+        watcher.close();
+        downloadDirWatcher = null;
+      });
     } catch (err) {
       LOGGER.error({ err: toError(err) }, "Cannot monitor download dir");
     }
@@ -252,6 +264,7 @@ registerCallHandler<
 
     try {
       await writeFile(filePath, content, { flag: "w" });
+      await clearDownloadIndexForFile(filePath);
       event.sender.send("channel.call", "storage.onsavetofiledone", taskId, 0);
     } catch (error) {
       event.sender.send(
@@ -281,6 +294,7 @@ registerCallHandler<[string, "abs" | "rel", "", string, boolean], void>(
 
     try {
       await rm(filePath);
+      await clearDownloadIndexForFile(filePath);
       event.sender.send(
         "channel.call",
         "storage.ondeletefilesdone",
@@ -290,6 +304,7 @@ registerCallHandler<[string, "abs" | "rel", "", string, boolean], void>(
       );
     } catch (err) {
       if (isFileNotFound(err)) {
+        await clearDownloadIndexForFile(filePath);
         event.sender.send(
           "channel.call",
           "storage.ondeletefilesdone",
@@ -343,13 +358,8 @@ registerCallHandler<[string, boolean, string, number, string[]], void>(
       const excludeSet = new Set(excludes.map((p) => normalizePath(path, p)));
       const batch: DownloadScannerItem[] = [];
 
-      const entries = await readdir(path, {
-        recursive: true,
-        withFileTypes: true,
-      });
-
       const flush = () => {
-        if (batch.length > 0) {
+        if (batch.length > 0 && !event.sender.isDestroyed()) {
           event.sender.send(
             "channel.call",
             "storage.ondownloadscanner",
@@ -358,30 +368,41 @@ registerCallHandler<[string, boolean, string, number, string[]], void>(
         }
       };
 
-      try {
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            continue;
-          }
+      const entries = await readdir(path, {
+        // The client currently passes false during startup but still expects
+        // downloaded tracks in nested artist/album folders to be discovered.
+        recursive: true,
+        withFileTypes: true,
+      });
+      for (const entry of entries) {
+        if (entry.isDirectory() || !isMusicFile(entry.name)) continue;
 
-          if (!isMusicFile(entry.name)) continue;
+        const fullPath = normalizePath(entry.parentPath, entry.name);
+        if (excludeSet.has(fullPath)) continue;
 
-          const fullPath = normalizePath(entry.parentPath, entry.name);
-          if (excludeSet.has(fullPath)) continue;
-
-          const relToBase = fullPath.slice(path.length + 1);
+        const relToBase = indexKeyForFile(path, fullPath);
+        if (!relToBase) continue;
+        try {
           const info = await readDownloadedMusicInfo(relToBase, path);
           if (!info) continue;
 
           batch.push(info);
           if (batch.length >= limit) flush();
+        } catch (err) {
+          LOGGER.warn(
+            { path: fullPath, err: toError(err) },
+            "Failed to scan downloaded music metadata"
+          );
         }
-
-        flush();
-      } catch (err) {
-        LOGGER.error({ path, err }, "Error when scanning downloads");
       }
-    })();
+
+      flush();
+    })().catch((err) => {
+      LOGGER.error(
+        { path, err: toError(err) },
+        "Error when scanning downloads"
+      );
+    });
   }
 );
 
@@ -554,61 +575,138 @@ registerCallHandler<
     // Don't block the call.
     (async () => {
       mediaPath = normalizePath(mediaPath);
-
-      const { talb, tit2, tpe1, tpos, trck } = id3Info;
-
-      const hasID3Meta =
-        talb !== undefined &&
-        tit2 !== undefined &&
-        tpe1 !== undefined &&
-        tpos !== undefined &&
-        trck !== undefined;
-      let taggedFile: MusicFile | null = null;
-      let imageFullPath: string | null = null;
-      if (hasID3Meta || imagePath || mediaInfo) {
-        taggedFile = await MusicFile.load(mediaPath);
-
-        if (hasID3Meta) {
-          taggedFile.album = talb;
-          taggedFile.title = tit2;
-          taggedFile.artist = typeof tpe1 === "string" ? tpe1 : tpe1.join(",");
-          taggedFile.discNumber = parseInt(tpos) || 0;
-          taggedFile.trackNumber = parseInt(trck) || 0;
-        }
-
-        if (imagePath) {
-          imageFullPath = normalizePath(downloadTemp, imagePath);
-          const mimeType = mime.getType(imageFullPath);
-          if (mimeType) {
-            try {
-              const imageData = await readFile(imageFullPath);
-              taggedFile.pictures = [new MetaPicture(mimeType, imageData)];
-            } catch (err) {
-              LOGGER.error(
-                { err: toError(err), mediaPath, imagePath: imageFullPath },
-                "Failed to insert cover art to media file"
-              );
-            }
-          }
-        }
-
-        if (mediaInfo) taggedFile.comment = ID3JsonToComment(mediaInfo);
+      if (!indexKeyForFile(downloadTemp, mediaPath)) {
+        throw new Error(`Illegal temporary media path: ${mediaPath}`);
       }
+      const downloadContext = completedDownloadContexts.get(mediaPath);
+      const { talb, tit2, tpe1, tpos, trck } = id3Info;
 
       let relPath = id3Info.media_rel_path;
       if (relPath.endsWith(".ncm")) {
-        // Current we don't know what's .ncm format, just rename to the original extension
+        // Currently we don't know the .ncm format; retain the downloaded extension.
         const originalExt = extname(mediaPath);
         relPath = relPath.slice(0, -4) + originalExt;
       }
+      const indexKey = normalizeDownloadRelativePath(relPath);
+      if (!indexKey) throw new Error(`Illegal download path: ${relPath}`);
 
-      const finalPath = normalizePath(download, relPath);
+      LOGGER.debug(
+        {
+          correlatedDownload: Boolean(downloadContext),
+          taskIdMatchesDownloadId: downloadContext?.id === taskId,
+          mediaType: downloadContext?.mediaType,
+          downloadType: downloadContext?.type,
+          suppliedMediaInfo: Boolean(mediaInfo),
+          suppliedTagFields: [talb, tit2, tpe1, tpos, trck].filter(
+            (value) => value !== undefined
+          ).length,
+        },
+        "Finalizing downloaded audio metadata"
+      );
+      const scannerMetadata = metadataForFinalization(
+        mediaInfo,
+        taskId,
+        indexKey,
+        id3Info,
+        downloadContext
+      );
+      const imageFullPath = imagePath
+        ? sanitizeRelativePath(downloadTemp, imagePath)
+        : null;
+      if (imageFullPath === false) {
+        throw new Error(`Illegal temporary image path: ${imagePath}`);
+      }
+      const finalPath = normalizePath(download, indexKey);
+      const index = downloadMetadataIndex();
+
       await mkdir(dirname(finalPath), { recursive: true });
-      if (taggedFile) await taggedFile.save(finalPath);
-      else await cp(mediaPath, finalPath);
+      // Path reuse must not leave metadata for the previous contents behind.
+      // A locked index must not prevent the audio itself from being finalized.
+      await index.delete(indexKey).catch((err) => {
+        LOGGER.warn(
+          { err: toError(err), indexKey },
+          "Failed to clear previous Cloud Drive metadata"
+        );
+      });
+      const result = await finalizeAudioFile(
+        mediaPath,
+        finalPath,
+        async (dest) => {
+          const taggedFile = await MusicFile.load(mediaPath);
+          if (talb !== undefined) taggedFile.album = talb;
+          if (tit2 !== undefined) taggedFile.title = tit2;
+          if (tpe1 !== undefined) {
+            taggedFile.artist =
+              typeof tpe1 === "string" ? tpe1 : tpe1.join(",");
+          }
+          if (tpos !== undefined) taggedFile.discNumber = parseInt(tpos) || 0;
+          if (trck !== undefined) taggedFile.trackNumber = parseInt(trck) || 0;
 
-      if (imageFullPath) await rm(imageFullPath, { force: true });
-      await rm(mediaPath, { force: true });
+          if (imageFullPath) {
+            const mimeType = mime.getType(imageFullPath);
+            if (mimeType) {
+              try {
+                const imageData = await readFile(imageFullPath);
+                taggedFile.pictures = [new MetaPicture(mimeType, imageData)];
+              } catch (err) {
+                LOGGER.error(
+                  { err: toError(err), mediaPath, imagePath: imageFullPath },
+                  "Failed to insert cover art into media file"
+                );
+              }
+            }
+          }
+
+          taggedFile.comment = ID3JsonToComment(scannerMetadata);
+          await taggedFile.save(dest);
+        }
+      );
+
+      if (result.tagError) {
+        LOGGER.warn(
+          { err: toError(result.tagError), mediaPath, finalPath },
+          "Tagging failed; preserved audio and indexed Cloud Drive metadata"
+        );
+      }
+      await index.put({
+        relativePath: indexKey,
+        metadata: scannerMetadata,
+        size: result.size,
+        mtimeMs: result.mtimeMs,
+        contextJson: JSON.stringify({
+          downloadRequest: downloadContext
+            ? {
+                id: downloadContext.id,
+                rel_path: downloadContext.relPath,
+                size: downloadContext.size,
+                md5: downloadContext.md5,
+                mediaType: downloadContext.mediaType,
+                type: downloadContext.type,
+                completedAt: downloadContext.completedAt,
+              }
+            : undefined,
+          addId3TaskId: taskId,
+          fields: id3Info,
+          suppliedMediaInfo: Boolean(mediaInfo),
+          markerEmbedded: result.embedded,
+        }),
+      });
+
+      completedDownloadContexts.delete(mediaPath);
+      if (imageFullPath) {
+        await rm(imageFullPath, { force: true }).catch((err) => {
+          LOGGER.warn(
+            { err: toError(err), imagePath: imageFullPath },
+            "Failed to clean downloaded cover image"
+          );
+        });
+      }
+      await rm(mediaPath, { force: true }).catch((err) => {
+        LOGGER.warn(
+          { err: toError(err), mediaPath },
+          "Failed to clean temporary downloaded audio"
+        );
+      });
 
       event.sender.send(
         "channel.call",
@@ -649,8 +747,42 @@ async function handleFileBatch(
         const dest = normalizePath(destPaths[index]);
         await mkdir(dirname(dest), { recursive: true });
         try {
+          const metadataIndex = download ? downloadMetadataIndex() : null;
+          const srcKey = download ? indexKeyForFile(download, src) : undefined;
+          const destKey = download
+            ? indexKeyForFile(download, dest)
+            : undefined;
+          const sourceEntry =
+            metadataIndex && srcKey
+              ? await metadataIndex.get(srcKey).catch(() => undefined)
+              : undefined;
+
           if (type === "copy") await copyFile(src, dest);
           else await rename(src, dest);
+
+          try {
+            if (metadataIndex && destKey) {
+              const destStat = await stat(dest);
+              if (sourceEntry) {
+                await metadataIndex.put({
+                  ...sourceEntry,
+                  relativePath: destKey,
+                  size: destStat.size,
+                  mtimeMs: destStat.mtimeMs,
+                });
+              } else {
+                await metadataIndex.delete(destKey);
+              }
+            }
+            if (type === "move" && metadataIndex && srcKey) {
+              await metadataIndex.delete(srcKey);
+            }
+          } catch (indexError) {
+            LOGGER.warn(
+              { type, src, dest, err: toError(indexError) },
+              "File operation succeeded but Cloud Drive index update failed"
+            );
+          }
         } catch (err) {
           // Simply no-op if source doesn't exist
           if (!isFileNotFound(err)) {

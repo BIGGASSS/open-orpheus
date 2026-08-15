@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import { Database } from "@open-orpheus/database";
 
+import { initializeCloudDriveIndex } from "./cloudDriveIndex";
 import { data } from "./folders";
 
 const pathToWebDb = join(data, "webdb.dat");
@@ -51,4 +52,5 @@ export async function initializeDatabases() {
   nativeDb = new Database(pathToNativeDb);
   await nativeDb.exec("PRAGMA journal_mode = WAL;", []);
   await nativeDb.exec("PRAGMA synchronous = FULL;", []);
+  await initializeCloudDriveIndex(nativeDb);
 }

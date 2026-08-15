@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import os from "node:os";
 import { resolve } from "node:path";
 
@@ -59,7 +60,62 @@ const defaultIcon = createIconForDarwin(
   nativeImage.createFromPath(defaultIconPath)
 );
 
+function linuxDesktop() {
+  const value = `${process.env.XDG_CURRENT_DESKTOP ?? ""}:${
+    process.env.DESKTOP_SESSION ?? ""
+  }`.toLowerCase();
+  const knownDesktops = [
+    "gnome",
+    "kde",
+    "cinnamon",
+    "unity",
+    "xfce",
+    "mate",
+    "lxqt",
+  ];
+  return knownDesktops.find((desktop) => value.includes(desktop)) ?? "other";
+}
+
+function linuxSessionType() {
+  const value = process.env.XDG_SESSION_TYPE?.toLowerCase();
+  return value === "wayland" || value === "x11" || value === "tty"
+    ? value
+    : "other";
+}
+
+let defaultIconBytes: number | null = null;
+try {
+  defaultIconBytes = statSync(defaultIconPath).size;
+} catch {
+  // The NativeImage state below still records a missing or unreadable asset.
+}
+
+const defaultIconSize = defaultIcon.getSize();
+LOGGER.info(
+  {
+    electronVersion: process.versions.electron,
+    platform: process.platform,
+    linux:
+      process.platform === "linux"
+        ? {
+            desktop: linuxDesktop(),
+            sessionType: linuxSessionType(),
+            flatpak: Boolean(process.env.FLATPAK_ID),
+          }
+        : undefined,
+    icon: {
+      path: iconFilename,
+      empty: defaultIcon.isEmpty(),
+      bytes: defaultIconBytes,
+      width: defaultIconSize.width,
+      height: defaultIconSize.height,
+    },
+  },
+  "Tray startup"
+);
+
 const trayIcon = new Tray(defaultIcon);
+LOGGER.info({ platform: process.platform }, "Tray constructed");
 
 trayIcon.setToolTip("Open Orpheus 启动中");
 trayIcon.setContextMenu(Menu.buildFromTemplate(defaultMenuItems));
@@ -90,6 +146,16 @@ export function setIcon(newIcon: NativeImage) {
   if (trayInstalled) {
     trayIcon.setImage(newIcon);
   }
+  const size = newIcon.getSize();
+  LOGGER.info(
+    {
+      installed: trayInstalled,
+      empty: newIcon.isEmpty(),
+      width: size.width,
+      height: size.height,
+    },
+    "Tray icon set"
+  );
 }
 
 export function setTooltip(newTooltip: string) {
@@ -160,6 +226,7 @@ export function install() {
     trayIcon.setContextMenu(null);
   }
   trayInstalled = true;
+  LOGGER.info({ platform: process.platform }, "Tray installed");
 }
 
 export function uninstall() {
@@ -172,4 +239,5 @@ export function uninstall() {
   trayIcon.setImage(defaultIcon);
   trayIcon.setContextMenu(Menu.buildFromTemplate(defaultMenuItems));
   trayInstalled = false;
+  LOGGER.info({ platform: process.platform }, "Tray uninstalled");
 }

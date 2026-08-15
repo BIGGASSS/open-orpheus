@@ -2,9 +2,10 @@ import { cp, mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { registerCallHandler } from "../calls";
+import { completedDownloadContexts } from "../cloudDrive";
 import startDownload, { type DownloadTask } from "../download";
 import { data as dataDir, downloadTemp } from "../folders";
-import { normalizePath, sanitizeRelativePath } from "../util";
+import { sanitizeRelativePath } from "../util";
 
 type DownloadStartRequest = {
   ext_header: string;
@@ -40,7 +41,7 @@ registerCallHandler<[DownloadStartRequest], void>(
       id,
       md5,
       //md5_check_fail,
-      //mediaType,
+      mediaType,
       //pre_path,
       rel_path,
       size,
@@ -62,8 +63,13 @@ registerCallHandler<[DownloadStartRequest], void>(
       }
     }
 
-    // Construct destination path: tmpdir + rel_path
-    const destPath = normalizePath(downloadTemp, rel_path);
+    // Construct a destination below the temporary download root. Reuse must
+    // not correlate this request with a previously completed download.
+    const destPath = sanitizeRelativePath(downloadTemp, rel_path);
+    if (destPath === false) {
+      throw new Error(`Illegal download path: ${rel_path}`);
+    }
+    completedDownloadContexts.delete(destPath);
 
     const task = await startDownload(url, destPath, {
       headers,
@@ -84,6 +90,17 @@ registerCallHandler<[DownloadStartRequest], void>(
     });
 
     task.on("end", async (e) => {
+      if (type !== 2) {
+        completedDownloadContexts.set(destPath, {
+          id,
+          relPath: rel_path,
+          size,
+          md5,
+          mediaType,
+          type,
+        });
+      }
+
       if (type === 2) {
         // Audio effect, ...?
         const finalPath = sanitizeRelativePath(dataDir, rel_path);
@@ -120,6 +137,7 @@ registerCallHandler<[DownloadStartRequest], void>(
         total: size,
         type: 1,
       });
+      completedDownloadContexts.delete(destPath);
       downloadTasks.delete(id);
     });
 

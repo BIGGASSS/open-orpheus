@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": "..",
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "../forge.env.d.ts",
+    "*.ts",
+    "../src/main/cloudDrive.ts",
+    "../src/main/cloudDriveIndex.ts",
+    "../src/main/id3.ts",
+    "../src/main/crypto.ts"
+  ]
+}
