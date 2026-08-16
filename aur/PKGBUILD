@@ -1,8 +1,9 @@
 # Maintainer: zlicdt <xkicdt1@gmail.com>
 
-pkgname=open-orpheus
+pkgname=open-orpheus-fork
+_pkgname=open-orpheus
 pkgver=0.16.2
-pkgrel=2
+pkgrel=1
 pkgdesc="An open-source implementation of Netease Cloud Music's Orpheus browser host."
 arch=('x86_64')
 url="https://github.com/BIGGASSS/open-orpheus"
@@ -26,23 +27,23 @@ makedepends=(
     'rust'
     'wasm-bindgen'
 )
-_commit=10194a6157e7e111b808fbf8059ab91672fc53d8
+_commit=dd02c1a8b63ec0bf8dcf0ff439ee64c64fd40de7
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/${_commit}.tar.gz")
-sha256sums=('b72e4dbb779360e6bdc081968c4fe928dd097cd52c1a0429c94a4ca831725daf')
+sha256sums=('9cfa0f210093161bde67a076cd2a9370f332e52f03386bae781e766bc299d7a4')
 
 prepare() {
-    cd "${pkgname}-${_commit}"
+    cd "${_pkgname}-${_commit}"
     pnpm install --frozen-lockfile
 }
 
 build() {
-    cd "${pkgname}-${_commit}"
+    cd "${_pkgname}-${_commit}"
     pnpm build:modules
     pnpm package -- --arch=x64
 }
 
 package() {
-    cd "${pkgname}-${_commit}"
+    cd "${_pkgname}-${_commit}"
 
     install -d "${pkgdir}/opt/${pkgname}"
     cp -a out/open-orpheus-linux-x64/. "${pkgdir}/opt/${pkgname}/"
