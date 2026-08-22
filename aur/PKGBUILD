@@ -3,7 +3,7 @@
 pkgname=open-orpheus-fork
 _pkgname=open-orpheus
 pkgver=0.16.2
-pkgrel=1
+pkgrel=2
 pkgdesc="An open-source implementation of Netease Cloud Music's Orpheus browser host."
 arch=('x86_64')
 url="https://github.com/BIGGASSS/open-orpheus"
@@ -27,9 +27,9 @@ makedepends=(
     'rust'
     'wasm-bindgen'
 )
-_commit=dd02c1a8b63ec0bf8dcf0ff439ee64c64fd40de7
+_commit=74ad738db7c9d954b3f02dcb5b728a7192484591
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/${_commit}.tar.gz")
-sha256sums=('9cfa0f210093161bde67a076cd2a9370f332e52f03386bae781e766bc299d7a4')
+sha256sums=('11e3e20e42108ac13ed9b9d66270220335a078ff099d2a619c3d838d313681db')
 
 prepare() {
     cd "${_pkgname}-${_commit}"
