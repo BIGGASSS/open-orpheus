@@ -11,6 +11,7 @@ import {
 } from "electron";
 
 import { registerCallHandler, registerCallbackHandler } from "../calls";
+import { mainWindow } from "../window";
 import { loadFromOrpheusUrl } from "../orpheus";
 import { fileExists, pngFromIco } from "../util";
 import packManager from "../pack";
@@ -65,7 +66,20 @@ registerCallHandler<string[], void>("app.exit", (event, action, ...params) => {
     });
   }
 
-  app.quit();
+  // Before calling `app.exit`, the web app schedules its exit flush via
+  // requestIdleCallback (2s timeout for the requestCache inserts, 3s for the
+  // deletes) and does not await it. That cache (the `requestCache` table in
+  // webdb.dat) is what offline mode serves, so quitting synchronously here
+  // destroys the renderer before its writes run and the last session's synced
+  // song list is lost. Hide the window so the exit feels instant, wait past
+  // the renderer's idle-callback timeouts, then quit.
+  const flushGraceMs = 3500;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+    setTimeout(() => app.quit(), flushGraceMs);
+  } else {
+    app.quit();
+  }
 });
 
 type StartCommand =
