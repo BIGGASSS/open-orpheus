@@ -1,7 +1,7 @@
-pkgbase = open-orpheus
+pkgbase = open-orpheus-fork
 	pkgdesc = An open-source implementation of Netease Cloud Music's Orpheus browser host.
 	pkgver = 0.16.2
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/BIGGASSS/open-orpheus
 	arch = x86_64
 	license = MIT
@@ -21,7 +21,7 @@ pkgbase = open-orpheus
 	optdepends = kde-cli-tools: file deletion support (kioclient)
 	options = !strip
 	options = !debug
-	source = open-orpheus-0.16.2.tar.gz::https://github.com/BIGGASSS/open-orpheus/archive/10194a6157e7e111b808fbf8059ab91672fc53d8.tar.gz
-	sha256sums = b72e4dbb779360e6bdc081968c4fe928dd097cd52c1a0429c94a4ca831725daf
+	source = open-orpheus-fork-0.16.2.tar.gz::https://github.com/BIGGASSS/open-orpheus/archive/9412e93635f0915639a53225bf0c92cf3ac21e4c.tar.gz
+	sha256sums = d6161081d1f00a2886ee876d3cb822e8a894c4d746dc6300e64d29f8761e4c7c
 
-pkgname = open-orpheus
+pkgname = open-orpheus-fork
