@@ -18,6 +18,8 @@ import {
 } from "./util";
 import { data as dataDir, storage as storageDir, wasm } from "./folders";
 import { client } from "./request";
+import { patchRequestCache } from "./compat/requestCachePatch";
+import logger from "./logger";
 
 class NetworkError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -49,8 +51,24 @@ async function loadFromFilePath(path: string): Promise<SimpleResponse> {
       .readFile(path);
     const contentType =
       mime.getType(extname(path)) || "application/octet-stream";
-    return { content: Buffer.from(fileContent), contentType };
-  } catch {
+    let content = Buffer.from(fileContent);
+    if (extname(path).toLowerCase() === ".js") {
+      try {
+        content = Buffer.from(patchRequestCache(content.toString("utf8")));
+      } catch (error) {
+        logger.error(
+          { path, err: error },
+          "Cannot apply request cache compatibility patch"
+        );
+        throw new LoadError(
+          "Unsupported frontend request cache implementation",
+          500
+        );
+      }
+    }
+    return { content, contentType };
+  } catch (error) {
+    if (error instanceof LoadError) throw error;
     throw new LoadError("Not Found", 404);
   }
 }

@@ -3,7 +3,7 @@ import os from "node:os";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
-import { app, dialog, Menu, protocol, session } from "electron";
+import { app, dialog, Menu, protocol, session, webContents } from "electron";
 
 import started from "electron-squirrel-startup";
 
@@ -32,6 +32,7 @@ import versions from "../versions.json";
 import packManager, { NO_WEBPACK_ERROR_MESSAGE } from "./main/pack";
 import showPackgeDownloadWindow from "./main/windows/package-download";
 import { mainWindow } from "./main/window";
+import { createShutdownHandler, flushShutdownCache } from "./main/shutdown";
 import registerAsProtocolClient, {
   checkOpenCommand as checkWebCommand,
 } from "./main/protocol";
@@ -460,10 +461,58 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  // Allow some windows to be closed.
-  setLifecycleState(LifecycleState.Quitting);
-});
+app.on(
+  "before-quit",
+  createShutdownHandler({
+    async flush() {
+      const frames = app.isReady()
+        ? webContents
+            .getAllWebContents()
+            .filter((contents) => !contents.isDestroyed())
+            .flatMap((contents) => contents.mainFrame.framesInSubtree)
+        : [];
+      await flushShutdownCache(frames, async () => {
+        // Do not initialize databases just to quit (e.g. package download cancelled).
+        if (!app.isReady()) return;
+        const { webDb } = await import("./main/database");
+        if (webDb) await webDb.executeSql("SELECT 1;");
+      });
+    },
+    async onFailure(error) {
+      logger.error(
+        { name: "shutdown", err: toError(error) },
+        "Request cache flush failed; shutdown paused."
+      );
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        title: "Open Orpheus",
+        message: "The request cache could not be saved before quitting.",
+        detail: `${toError(error).message}\n\nRetry to wait for the cache to be saved, or Quit Anyway to exit with possible loss of unsaved cache data.`,
+        buttons: ["Retry", "Quit Anyway"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return response === 1 ? "quit" : "retry";
+    },
+    onPromptFailure(error) {
+      logger.error(
+        { name: "shutdown", err: toError(error) },
+        "Could not show shutdown prompt; application remains open."
+      );
+      dialog.showErrorBox(
+        "Open Orpheus",
+        "Could not save the request cache. The application will remain open. Please try quitting again.\n\n" +
+          toError(error).message
+      );
+    },
+    quit() {
+      // Keep close handlers protecting windows until flush (or explicit override).
+      setLifecycleState(LifecycleState.Quitting);
+      app.quit();
+    },
+  })
+);
 
 app.on("second-instance", (event, argv) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
