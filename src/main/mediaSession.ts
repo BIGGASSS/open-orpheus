@@ -2,27 +2,49 @@ import os from "node:os";
 
 import { toError } from "../util";
 import { events as lifecycleEvents } from "./lifecycle";
+import { resolveCoverUrl } from "./playback/artwork";
 import PlaybackController from "./playback/PlaybackController";
-import { PlaybackChange } from "./playback/types";
+import { PlaybackChange, TrackInfo } from "./playback/types";
 import {
   MediaSessionAdapter,
   NoopAdapter,
 } from "./playback/adapters/MediaSessionAdapter";
 import PlayerCommandRouter from "./playback/PlayerCommandRouter";
 
-/** Track metadata passed through the frozen `player.setInfo` seam. */
+/**
+ * Track metadata passed through the frozen `player.setInfo` seam.
+ *
+ * Album art is deliberately not part of this seam: it is reported separately,
+ * per song, through `player.setCover` (see {@link mediaSession.setCover}).
+ */
 export interface Metadata {
   id: string;
   title: string;
   artist: string;
   album: string;
-  url: string;
 }
 
 /** Single source of truth for playback state (see playback/PlaybackController). */
 export const playbackController = new PlaybackController();
 
 let adapter: MediaSessionAdapter = new NoopAdapter();
+
+// Album-art state for the current song. `player.setCover` carries no track id;
+// a playId uniquely identifies one song, so the cover is only cleared when a
+// different playId arrives in `setMetadata`. It is delivered to the OS session
+// separately from the track metadata (see {@link mediaSession.setCover}).
+let currentId: string | null = null;
+
+/** Build the `TrackInfo` pushed to the controller for the current metadata. */
+function toTrackInfo(metadata: Metadata | null): TrackInfo | null {
+  if (!metadata) return null;
+  return {
+    id: metadata.id,
+    title: metadata.title,
+    artist: metadata.artist,
+    album: metadata.album,
+  };
+}
 
 /**
  * Load and construct a platform media-session adapter. Media integration is an
@@ -81,6 +103,7 @@ export async function createMediaSession(): Promise<void> {
 
   // Derived state → OS media-session adapter.
   playbackController.on("trackchanged", ({ data }) => adapter.onTrack(data));
+  playbackController.on("coverchanged", ({ data }) => adapter.onArtwork(data));
   playbackController.on("statuschanged", ({ data }) => adapter.onStatus(data));
   playbackController.on("positionchanged", ({ data }) =>
     adapter.onPosition(data.position, data.seeked)
@@ -92,10 +115,38 @@ export async function createMediaSession(): Promise<void> {
   playbackController.on("volumechanged", ({ data }) => adapter.onVolume(data));
 }
 
-// Frozen seam: `player.setInfo` (registerCallHandler) calls this.
+// Frozen seams: `player.setInfo` (registerCallHandler) calls `setMetadata`;
+// `player.setCover` (registerCallHandler) calls `setCover`.
 export const mediaSession = {
+  /**
+   * Track metadata for the current song. The renderer calls this twice per song
+   * change — once before and once after `player.setCover` — so a cover attached
+   * by {@link setCover} must survive a same-id `setMetadata`. The cover is
+   * cleared only when a different playId arrives (one playId = one song).
+   */
   setMetadata(metadata: Metadata | null): void {
-    playbackController.setTrack(metadata);
+    const nextId = metadata?.id ?? null;
+    if (nextId !== currentId) {
+      // Different playId (or stop): the previous song's cover no longer applies.
+      currentId = nextId;
+      playbackController.applyCover(null);
+    }
+    playbackController.setTrack(toTrackInfo(metadata));
+  },
+
+  /**
+   * Album art for the current song (`player.setCover`). The raw URL is resolved
+   * into something the OS media sessions can consume (a remote URL passes
+   * through; an `orpheus://localmusic/pic?<path>` cover is extracted to a local
+   * `file://` file), then pushed to the adapters as an art-only update — it is
+   * not a track change.
+   */
+  async setCover(rawUrl: string | null): Promise<void> {
+    const id = currentId;
+    if (id === null) return; // no track known yet
+    const resolved = await resolveCoverUrl(rawUrl, id);
+    if (id !== currentId) return; // a different playId arrived while resolving
+    playbackController.applyCover(resolved);
   },
 };
 

@@ -1,7 +1,3 @@
-import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-
 import Emittery from "emittery";
 
 import {
@@ -10,22 +6,22 @@ import {
 } from "@open-orpheus/dbus";
 
 import type { MprisMetadata } from "@open-orpheus/dbus";
-import { cache } from "../../folders";
 import { client } from "../../request";
 import { imageSize } from "../../../util";
+import {
+  artworkFileExists,
+  artworkFileUrl,
+  cacheArtwork,
+  remoteArtExt,
+} from "../artwork";
 import { PlaybackStatus, TrackInfo } from "../types";
 import {
   MediaSessionAdapter,
   PlayerCommandEvents,
 } from "./MediaSessionAdapter";
 
-const THUMBNAIL_CACHE_DIR = join(cache, "thumbnails");
-
 // MPRIS uses microseconds, and we use seconds.
 const TIME_RATIO = 1_000_000;
-
-/** Maximum number of cached thumbnails to keep (oldest are evicted). */
-const MAX_THUMBNAILS = 3;
 
 /** Square size to request for album art (instead of the original image). */
 const ARTWORK_SIZE = 512;
@@ -88,15 +84,12 @@ export default class MprisAdapter
 
   onTrack(track: TrackInfo | null): void {
     this.metadata = track;
-    this.artUrl = null;
+    this.artUrl = null; // album art for a new song arrives separately (onArtwork)
     if (!track) {
       this.mediaSession.setMetadata(null);
       return;
     }
-    // Send metadata right away; album art is attached once it has been
-    // prefetched and cached locally (see refreshArtwork).
     this.pushMetadata();
-    void this.refreshArtwork(track);
   }
 
   onStatus(status: PlaybackStatus): void {
@@ -145,78 +138,50 @@ export default class MprisAdapter
   }
 
   /**
-   * Prefetch the album art with the global `got` client and cache it at
-   * `${THUMBNAIL_CACHE_DIR}/${id}.<ext>`, then push the local `file://` URL as
-   * `mpris:artUrl`. Falls back to the remote URL if the download fails.
+   * Album art for the current song (`player.setCover`). The URL is already
+   * resolved to something the OS can consume: a local `file://` (embedded art
+   * of local music) or a remote http(s) URL.
    */
-  private async refreshArtwork(track: TrackInfo): Promise<void> {
-    const artUrl = await this.prefetchArtwork(track);
-    if (this.metadata?.id !== track.id) return; // track changed meanwhile
-    this.artUrl = artUrl;
+  onArtwork(artUrl: string | null): void {
+    if (!this.metadata) return; // no current song
+    if (!artUrl) {
+      this.artUrl = null;
+      this.pushMetadata();
+      return;
+    }
+    const id = this.metadata.id;
+    void this.refreshArtwork(id, artUrl);
+  }
+
+  private async refreshArtwork(id: string, artUrl: string): Promise<void> {
+    const fileUrl = await this.cacheArtworkLocally(id, artUrl);
+    if (this.metadata?.id !== id) return; // a different playId meanwhile
+    this.artUrl = fileUrl;
     this.pushMetadata();
   }
 
-  private async prefetchArtwork(track: TrackInfo): Promise<string> {
-    // TODO: Local music's support
-    if (!track.url) return ""; // no artwork URL
-
+  private async cacheArtworkLocally(
+    id: string,
+    artUrl: string
+  ): Promise<string> {
+    // Already local (embedded art extracted by the media-session layer).
+    if (artUrl.startsWith("file://")) return artUrl;
     // Fetch a reasonably-sized thumbnail instead of the original (potentially
     // huge) image — MPRIS clients only ever display a small square.
-    const downloadUrl = resizedArtUrl(track.url);
-
-    const filePath = join(
-      THUMBNAIL_CACHE_DIR,
-      `${track.id}${artworkExt(downloadUrl)}`
-    );
-    const fileUrl = pathToFileURL(filePath).toString();
-
-    // Reuse the cached file if the art for this track was already downloaded.
-    try {
-      await stat(filePath);
-      return fileUrl;
-    } catch {
-      // Not cached yet — download it.
+    const downloadUrl = resizedArtUrl(artUrl);
+    const ext = remoteArtExt(downloadUrl);
+    // Reuse the cached file if the art for this song was already downloaded.
+    if (await artworkFileExists(id, ext)) {
+      return artworkFileUrl(id, ext);
     }
-
     try {
-      await mkdir(THUMBNAIL_CACHE_DIR, { recursive: true });
       const response = await client.get(downloadUrl, {
         responseType: "buffer",
       });
-      await writeFile(filePath, response.body);
-      await this.pruneThumbnails();
-      return fileUrl;
+      return await cacheArtwork(id, response.body, ext);
     } catch {
       // Download failed; keep the (resized) remote URL so artwork still works.
       return downloadUrl;
-    }
-  }
-
-  /**
-   * Evict the oldest files so the thumbnail cache stays bounded at
-   * `MAX_THUMBNAILS`. Called after each new thumbnail is written; the freshly
-   * written file is the most recent and is always kept.
-   */
-  private async pruneThumbnails(): Promise<void> {
-    try {
-      const entries = await readdir(THUMBNAIL_CACHE_DIR, {
-        withFileTypes: true,
-      });
-      const files = await Promise.all(
-        entries
-          .filter((e) => e.isFile())
-          .map(async (e) => {
-            const { mtimeMs } = await stat(join(THUMBNAIL_CACHE_DIR, e.name));
-            return { name: e.name, mtimeMs };
-          })
-      );
-      files.sort((a, b) => a.mtimeMs - b.mtimeMs);
-      const stale = files.slice(0, Math.max(0, files.length - MAX_THUMBNAILS));
-      await Promise.all(
-        stale.map((f) => unlink(join(THUMBNAIL_CACHE_DIR, f.name)))
-      );
-    } catch {
-      // Ignore pruning failures — the cache just grows until next time.
     }
   }
 
@@ -239,15 +204,6 @@ function resizedArtUrl(url: string): string {
     return imageSize(url, ARTWORK_SIZE);
   } catch {
     return url;
-  }
-}
-
-/** Extension from a remote artwork URL, defaulting to `.jpg`. */
-function artworkExt(url: string): string {
-  try {
-    return extname(new URL(url).pathname) || ".jpg";
-  } catch {
-    return ".jpg";
   }
 }
 
