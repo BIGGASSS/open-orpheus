@@ -1,9 +1,9 @@
 # Maintainer: zlicdt <xkicdt1@gmail.com>
 
-pkgname=open-orpheus-fork
+pkgname=open-orpheus-fork-git
 _pkgname=open-orpheus
-pkgver=0.16.2
-pkgrel=2
+pkgver=0.16.2.r951.g281899d
+pkgrel=1
 pkgdesc="An open-source implementation of Netease Cloud Music's Orpheus browser host."
 arch=('x86_64')
 url="https://github.com/BIGGASSS/open-orpheus"
@@ -21,29 +21,40 @@ depends=(
     'xdg-utils'
 )
 optdepends=('kde-cli-tools: file deletion support (kioclient)')
+provides=("open-orpheus-fork=${pkgver}")
+conflicts=('open-orpheus-fork')
 makedepends=(
+    'git'
     'nodejs>=24'
     'pnpm'
     'rust'
     'wasm-bindgen'
 )
-_commit=74ad738db7c9d954b3f02dcb5b728a7192484591
-source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/${_commit}.tar.gz")
-sha256sums=('11e3e20e42108ac13ed9b9d66270220335a078ff099d2a619c3d838d313681db')
+source=("${_pkgname}::git+${url}.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${srcdir}/${_pkgname}" || return 1
+    local version revision hash
+    version=$(node -p 'require("./package.json").version.replace(/-/g, ".")') || return 1
+    revision=$(git rev-list --count HEAD) || return 1
+    hash=$(git rev-parse --short HEAD) || return 1
+    printf '%s.r%s.g%s\n' "$version" "$revision" "$hash"
+}
 
 prepare() {
-    cd "${_pkgname}-${_commit}"
+    cd "${srcdir}/${_pkgname}"
     pnpm install --frozen-lockfile
 }
 
 build() {
-    cd "${_pkgname}-${_commit}"
+    cd "${srcdir}/${_pkgname}"
     pnpm build:modules
     pnpm package -- --arch=x64
 }
 
 package() {
-    cd "${_pkgname}-${_commit}"
+    cd "${srcdir}/${_pkgname}"
 
     install -d "${pkgdir}/opt/${pkgname}"
     cp -a out/open-orpheus-linux-x64/. "${pkgdir}/opt/${pkgname}/"
