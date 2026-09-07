@@ -92,12 +92,7 @@ typings/
 out/
 
 # makepkg
-/aur/pkg/
-/aur/src/
-/aur/open-orpheus/
-/aur/*.pkg.tar.*
-/aur/*.src.tar.*
-/aur/open-orpheus-*.tar.gz
+aur/
 
 # Rust
 target
