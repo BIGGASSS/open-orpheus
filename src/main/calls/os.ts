@@ -2,7 +2,7 @@ import { isAbsolute } from "node:path";
 import os from "node:os";
 import { statfs } from "node:fs/promises";
 
-import { BrowserWindow, powerSaveBlocker, screen, shell } from "electron";
+import { app, BrowserWindow, powerSaveBlocker, screen, shell } from "electron";
 
 import { getSystemFonts } from "@open-orpheus/ui";
 
@@ -134,6 +134,43 @@ registerCallHandler<
     }
   }
 );
+
+interface AutoExitState {
+  targetTimestamp: number;
+  timeout: NodeJS.Timeout;
+  shouldShutdown: boolean;
+}
+let autoExitState: AutoExitState | null = null;
+registerCallHandler<[number, boolean], void>(
+  "os.exitWindowSystem",
+  (event, seconds, shouldShutdown) => {
+    if (autoExitState) {
+      clearTimeout(autoExitState.timeout);
+      autoExitState = null;
+    }
+    if (isNaN(seconds) || !isFinite(seconds) || seconds <= 0) return; // Disable
+    const ms = seconds * 1000;
+    const timeout = setTimeout(() => {
+      autoExitState = null;
+      if (shouldShutdown)
+        LOGGER.warn("Auto shutdown after exit is currently unsupported.");
+      app.quit();
+    }, ms);
+    autoExitState = {
+      targetTimestamp: Date.now() + ms,
+      timeout,
+      shouldShutdown,
+    };
+  }
+);
+
+registerCallHandler<[], [number, number]>("os.exitWindowSystemLeftTime", () => {
+  if (!autoExitState) return [-1, 0];
+  return [
+    Math.max(0, autoExitState.targetTimestamp - Date.now()),
+    autoExitState.shouldShutdown ? 1 : 0,
+  ];
+});
 
 registerCallHandler<[string], [string]>(
   "os.getDiskSpace",
