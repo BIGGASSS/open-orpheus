@@ -1,12 +1,12 @@
 import Emittery from "emittery";
 
 import { MediaSession } from "@open-orpheus/nowplaying";
+import { nativeArtUrl } from "../artwork";
 import { PlaybackStatus, TrackInfo } from "../types";
 import {
   MediaSessionAdapter,
   PlayerCommandEvents,
 } from "./MediaSessionAdapter";
-import { imageSize } from "../../../util";
 
 /** macOS Now Playing integration, backed by the `@open-orpheus/nowplaying` module. */
 export default class NowPlayingAdapter
@@ -16,6 +16,7 @@ export default class NowPlayingAdapter
   private mediaSession: MediaSession;
 
   private track: TrackInfo | null = null;
+  private artUrl: string | null = null;
   private position: number | null = null;
   private duration: number | null = null;
   private rate = 1;
@@ -53,6 +54,13 @@ export default class NowPlayingAdapter
 
   onTrack(track: TrackInfo | null): void {
     this.track = track;
+    this.artUrl = null; // album art arrives separately via onArtwork
+    this.pushMetadata();
+  }
+
+  onArtwork(artUrl: string | null): void {
+    if (!this.track) return; // no current song
+    this.artUrl = artUrl;
     this.pushMetadata();
   }
 
@@ -98,7 +106,7 @@ export default class NowPlayingAdapter
             duration: this.duration ?? undefined,
             elapsed: this.position ?? undefined,
             rate: this.rate,
-            artUrl: imageSize(this.track.url, 512),
+            artUrl: this.artUrl ? nativeArtUrl(this.artUrl) : undefined,
           }
         : null
     );
