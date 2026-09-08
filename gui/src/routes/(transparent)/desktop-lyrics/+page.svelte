@@ -230,7 +230,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class={cn(
-      "group flex h-screen w-screen items-center justify-evenly overflow-hidden rounded-lg p-2 select-none",
+      "group flex h-screen w-screen touch-none items-center justify-evenly overflow-hidden rounded-lg p-2 select-none",
       !locked && enableFullInteraction && "bg-black/40"
     )}
     class:cursor-grab={!locked}

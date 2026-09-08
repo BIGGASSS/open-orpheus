@@ -16,8 +16,16 @@ pub(crate) enum State {
 pub(crate) enum InjectedType {
     InternAtomNetWmMoveresize,
     QueryExtensionShape,
+    QueryExtensionXInput,
     QueryPointer,
     Other,
+}
+
+/// The most recently captured press gesture (button press or touch begin).
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub(crate) enum GestureKind {
+    Button,
+    TouchBegin,
 }
 
 pub(crate) struct QueryPointerPending {
@@ -42,6 +50,7 @@ pub(crate) struct X11Conn {
     pub(crate) injected_seqs: HashMap<u16, InjectedType>,
     pub(crate) net_wm_moveresize: Option<u32>,
     pub(crate) shape_opcode: Option<u8>,
+    pub(crate) xi_opcode: Option<u8>,
     pub(crate) root_window: u32,
     pub(crate) root_x: i16,
     pub(crate) root_y: i16,
@@ -50,6 +59,10 @@ pub(crate) struct X11Conn {
     pub(crate) last_button_press: Option<Vec<u8>>,
     pub(crate) press_accum: Vec<u8>,
     pub(crate) press_remaining: usize,
+    pub(crate) last_touch_begin: Option<Vec<u8>>,
+    pub(crate) touch_accum: Vec<u8>,
+    pub(crate) touch_remaining: usize,
+    pub(crate) last_gesture: Option<GestureKind>,
     pub(crate) pending_inbound: Vec<u8>,
     // Ancillary data (SCM_RIGHTS) received with bytes that were buffered and
     // have not been forwarded yet. Attached to the first byte the transport
@@ -79,6 +92,7 @@ impl X11Conn {
             injected_seqs: HashMap::new(),
             net_wm_moveresize: None,
             shape_opcode: None,
+            xi_opcode: None,
             root_window: 0,
             root_x: 0,
             root_y: 0,
@@ -87,6 +101,10 @@ impl X11Conn {
             last_button_press: None,
             press_accum: Vec::new(),
             press_remaining: 0,
+            last_touch_begin: None,
+            touch_accum: Vec::new(),
+            touch_remaining: 0,
+            last_gesture: None,
             pending_inbound: Vec::new(),
             rx_ctrl_bytes: Vec::new(),
             rx_ctrl_fds: Vec::new(),

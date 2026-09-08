@@ -115,6 +115,16 @@ pub(crate) fn feed_inbound(fd: RawFd, chunk: &[u8], cmsg: Option<Cmsg>) -> Optio
             conn.press_remaining -= p_n;
             if conn.press_remaining == 0 {
                 conn.last_button_press = Some(std::mem::take(&mut conn.press_accum));
+                conn.last_gesture = Some(GestureKind::Button);
+            }
+        }
+        if conn.touch_remaining > 0 {
+            let p_n = conn.touch_remaining.min(n);
+            conn.touch_accum.extend_from_slice(&chunk[..p_n]);
+            conn.touch_remaining -= p_n;
+            if conn.touch_remaining == 0 {
+                conn.last_touch_begin = Some(std::mem::take(&mut conn.touch_accum));
+                conn.last_gesture = Some(GestureKind::TouchBegin);
             }
         }
         conn.rx_stream_remaining -= n;
@@ -242,6 +252,8 @@ pub(crate) fn feed_inbound(fd: RawFd, chunk: &[u8], cmsg: Option<Cmsg>) -> Optio
                 handlers::sequence::rewrite_seq(conn, seq, evt_code, &mut out, out_start);
 
                 let is_press = handlers::button::track_button(conn, evt_code, off, inspect_len);
+                let is_touch = !is_press
+                    && handlers::button::track_touch_begin(conn, evt_code, off, inspect_len);
 
                 if is_press {
                     conn.press_accum.clear();
@@ -250,6 +262,16 @@ pub(crate) fn feed_inbound(fd: RawFd, chunk: &[u8], cmsg: Option<Cmsg>) -> Optio
                     conn.press_remaining = total - forward_len;
                     if conn.press_remaining == 0 {
                         conn.last_button_press = Some(std::mem::take(&mut conn.press_accum));
+                        conn.last_gesture = Some(GestureKind::Button);
+                    }
+                } else if is_touch {
+                    conn.touch_accum.clear();
+                    conn.touch_accum
+                        .extend_from_slice(&out[out_start..out_start + forward_len]);
+                    conn.touch_remaining = total - forward_len;
+                    if conn.touch_remaining == 0 {
+                        conn.last_touch_begin = Some(std::mem::take(&mut conn.touch_accum));
+                        conn.last_gesture = Some(GestureKind::TouchBegin);
                     }
                 }
             }
@@ -349,9 +371,10 @@ pub(crate) fn feed_outbound(fd: RawFd, chunk: &[u8], cmsg: Option<Cmsg>) -> Opti
             out.extend_from_slice(&conn.tx_buf[off..off + total]);
             off += total;
 
-            let (req1, req2) = handlers::setup::initial_requests(conn);
+            let (req1, req2, req3) = handlers::setup::initial_requests(conn);
             out.extend_from_slice(&req1);
             out.extend_from_slice(&req2);
+            out.extend_from_slice(&req3);
         } else {
             if conn.tx_buf.len() - off < 4 {
                 if off <= head_idx {

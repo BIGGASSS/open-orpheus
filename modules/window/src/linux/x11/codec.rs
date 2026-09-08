@@ -2,6 +2,22 @@ use std::{mem, os::fd::RawFd};
 
 use libc::{AF_UNIX, c_void, sa_family_t, sockaddr, sockaddr_un};
 
+// ── XI2 constants ──────────────────────────────────────────────────────────
+
+/// Core `GenericEvent` code carrying XI2 events.
+pub(crate) const XI_GENERIC_EVENT: u8 = 35;
+/// XI2 event types (absolute enum values in the `GenericEvent` evtype field).
+pub(crate) const XI_EV_TOUCH_BEGIN: u16 = 18;
+pub(crate) const XI_EV_TOUCH_END: u16 = 20;
+/// XI2 extension request opcodes (second byte after the XI major opcode).
+/// XIAllowTouchEvents (XI 2.2) reuses the XIAllowEvents request with the
+/// extended `xXI2_2AllowEventsReq` body; there is no separate opcode.
+pub(crate) const XI_ALLOW_EVENTS: u8 = 53;
+/// XIAllowTouchEvents event modes (`mode` field of `xXI2_2AllowEventsReq`).
+/// (XIAsyncDevice=0 … XISyncPair=5, XIAcceptTouch=6.) Reject hands the
+/// sequence over to core-pointer emulation.
+pub(crate) const XI_REJECT_TOUCH: u32 = 7;
+
 pub(crate) fn checked_word_len(words: usize) -> Option<usize> {
     words.checked_mul(4)
 }

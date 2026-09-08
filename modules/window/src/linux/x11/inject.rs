@@ -11,6 +11,11 @@ use super::state::*;
 
 /// Drag the given X11 window by synthesizing the `_NET_WM_MOVERESIZE`
 /// protocol: UngrabPointer + SendEvent(ClientMessage) + GetInputFocus.
+///
+/// A drag initiated from a touch sequence needs two extra steps a button
+/// drag does not: reject the touch via `XIAllowTouchEvents` so the WM's
+/// core-pointer grab actually follows the finger, and feed the client a
+/// synthetic `XI_TouchEnd` so Chromium doesn't keep an unterminated touch.
 pub(crate) fn move_window(conn: &mut X11Conn, sink: &Sink, window: u32) -> bool {
     let Some(atom) = conn.net_wm_moveresize else {
         return false;
@@ -19,11 +24,24 @@ pub(crate) fn move_window(conn: &mut X11Conn, sink: &Sink, window: u32) -> bool 
         return false;
     }
 
-    // Three injected requests: UngrabPointer, SendEvent, GetInputFocus.
-    conn.begin_injected_requests(3);
+    let is_touch = conn.last_gesture == Some(GestureKind::TouchBegin);
+    let can_reject = is_touch && conn.xi_opcode.is_some();
 
-    // Synthesize a matching ButtonRelease so the client doesn't see a stuck press.
-    if let Some(release) = conn
+    // Injected requests: UngrabPointer, SendEvent, GetInputFocus, plus
+    // XIAllowTouchEvents for touch-initiated drags.
+    conn.begin_injected_requests(if can_reject { 4 } else { 3 });
+
+    // Synthesize the matching terminator so the client doesn't see a stuck
+    // button or an unterminated touch sequence.
+    if can_reject {
+        if let Some(end) = conn
+            .last_touch_begin
+            .as_ref()
+            .and_then(|begin| build_touch_end(begin, conn.is_le))
+        {
+            conn.pending_inbound.extend_from_slice(&end);
+        }
+    } else if let Some(release) = conn
         .last_button_press
         .as_ref()
         .and_then(|p| build_release(p, conn.is_le))
@@ -31,7 +49,10 @@ pub(crate) fn move_window(conn: &mut X11Conn, sink: &Sink, window: u32) -> bool 
         conn.pending_inbound.extend_from_slice(&release);
     }
 
-    let payload = build_moveresize_move_payload(conn, window, atom);
+    let mut payload = build_moveresize_move_payload(conn, window, atom);
+    if can_reject && let Some(begin) = conn.last_touch_begin.as_ref() {
+        payload.extend_from_slice(&build_allow_touch_reject(conn, begin));
+    }
     sink.send_to_server(&payload)
 }
 
@@ -45,6 +66,56 @@ fn build_release(press: &[u8], is_le: bool) -> Option<Vec<u8>> {
         write_u16(&mut release[8..10], 5, is_le);
     }
     Some(release)
+}
+
+/// Morph a captured `XI_TouchBegin` into a synthetic `XI_TouchEnd` by flipping
+/// the evtype. The captured bytes were already sequence-rewritten into client
+/// space, so the result can be queued straight into `pending_inbound`
+/// (mirroring how `build_release` reuses the press bytes).
+fn build_touch_end(begin: &[u8], is_le: bool) -> Option<Vec<u8>> {
+    if begin.len() < 10 {
+        return None;
+    }
+    let mut end = begin.to_vec();
+    write_u16(&mut end[8..10], XI_EV_TOUCH_END, is_le);
+    Some(end)
+}
+
+/// Build an `XIAllowTouchEvents(XIRejectTouch)` request for the captured touch
+/// sequence. Rejecting hands the sequence over to core-pointer emulation so the
+/// window manager's interactive-move grab actually follows the finger.
+///
+/// Wire format is the XI 2.2 `xXI2_2AllowEventsReq`: it is the XIAllowEvents
+/// request (`ReqType = XI_ALLOW_EVENTS`) with `touchid`/`grab_window` appended.
+fn build_allow_touch_reject(conn: &X11Conn, begin: &[u8]) -> Vec<u8> {
+    let is_le = conn.is_le;
+
+    // xXIDeviceEvent wire offsets: deviceid@10, detail(touch id)@16,
+    // event window@24.
+    let deviceid = r16(&begin[10..12], is_le);
+    let touchid = r32(&begin[16..20], is_le);
+    // XIAllowTouchEvents wants the window the touch was delivered to (the
+    // xXIDeviceEvent `event` field), not the root.
+    let grab_window = if begin.len() >= 28 {
+        r32(&begin[24..28], is_le)
+    } else {
+        conn.root_window
+    };
+
+    // xXI2_2AllowEventsReq layout (24 bytes = length 6):
+    //   reqType, ReqType, length, deviceid, pad, mode, time, touchid,
+    //   grab_window.
+    let mut p = vec![0u8; 24];
+    p[0] = conn.xi_opcode.unwrap_or(0);
+    p[1] = XI_ALLOW_EVENTS;
+    write_u16(&mut p[2..4], 6, is_le);
+    write_u16(&mut p[4..6], deviceid, is_le);
+    // p[6..8] pad
+    write_u32(&mut p[8..12], XI_REJECT_TOUCH, is_le);
+    write_u32(&mut p[12..16], 0, is_le); // time = CurrentTime (0)
+    write_u32(&mut p[16..20], touchid, is_le);
+    write_u32(&mut p[20..24], grab_window, is_le);
+    p
 }
 
 fn build_moveresize_move_payload(conn: &X11Conn, window: u32, atom: u32) -> Vec<u8> {
