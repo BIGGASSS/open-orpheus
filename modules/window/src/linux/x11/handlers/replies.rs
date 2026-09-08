@@ -26,6 +26,12 @@ pub(crate) fn on_reply(conn: &mut X11Conn, code: u8, seq: u16, off: usize) -> bo
                     conn.shape_opcode = Some(conn.rx_buf[off + 9]);
                 }
             }
+            InjectedType::QueryExtensionXInput => {
+                let present = conn.rx_buf[off + 8] != 0;
+                if present {
+                    conn.xi_opcode = Some(conn.rx_buf[off + 9]);
+                }
+            }
             InjectedType::QueryPointer => {
                 let root_x = r16(&conn.rx_buf[off + 16..off + 18], conn.is_le) as i16;
                 let root_y = r16(&conn.rx_buf[off + 18..off + 20], conn.is_le) as i16;

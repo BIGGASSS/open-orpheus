@@ -36,3 +36,29 @@ pub(crate) fn track_button(
     }
     false
 }
+
+/// Tracks an XI2 `XI_TouchBegin` (touch equivalent of a press). Returns `true`
+/// when the message starts a touch sequence, so the caller can capture its
+/// bytes for a later synthetic `XI_TouchEnd`.
+pub(crate) fn track_touch_begin(
+    conn: &mut X11Conn,
+    evt_code: u8,
+    off: usize,
+    inspect_len: usize,
+) -> bool {
+    if evt_code == XI_GENERIC_EVENT && inspect_len >= 40 {
+        let evtype = r16(&conn.rx_buf[off + 8..off + 10], conn.is_le);
+        if evtype == XI_EV_TOUCH_BEGIN {
+            // xXIDeviceEvent wire offsets (0-based, incl. 32-byte header):
+            // detail(touch id)@16, root@20, root_x@32, root_y@36.
+            conn.root_window = r32(&conn.rx_buf[off + 20..off + 24], conn.is_le);
+            let rx_fp = r32(&conn.rx_buf[off + 32..off + 36], conn.is_le) as i32;
+            let ry_fp = r32(&conn.rx_buf[off + 36..off + 40], conn.is_le) as i32;
+            conn.root_x = (rx_fp >> 16) as i16;
+            conn.root_y = (ry_fp >> 16) as i16;
+            conn.button = 1; // Left Click for the _NET_WM_MOVERESIZE payload
+            return true;
+        }
+    }
+    false
+}

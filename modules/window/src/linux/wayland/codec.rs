@@ -11,6 +11,7 @@ pub(crate) enum Iface {
     WlCompositor,
     WlSeat,
     WlPointer,
+    WlTouch,
     WlSurface,
     XdgWmBase,
     XdgSurface,
@@ -25,10 +26,13 @@ pub(crate) const REQ_BIND: u16 = 0;
 pub(crate) const REQ_CREATE_SURFACE: u16 = 0;
 pub(crate) const REQ_CREATE_REGION: u16 = 1;
 pub(crate) const REQ_GET_POINTER: u16 = 0;
+pub(crate) const REQ_GET_TOUCH: u16 = 2;
 pub(crate) const EVT_ENTER: u16 = 0;
 pub(crate) const EVT_LEAVE: u16 = 1;
 pub(crate) const EVT_BUTTON: u16 = 3;
 pub(crate) const BTN_PRESSED: u32 = 1;
+pub(crate) const EVT_TOUCH_DOWN: u16 = 0;
+pub(crate) const WL_TOUCH_RELEASE: u16 = 0;
 pub(crate) const REQ_GET_XDG_SURFACE: u16 = 2;
 pub(crate) const REQ_GET_TOPLEVEL: u16 = 1;
 pub(crate) const REQ_SET_TITLE: u16 = 2;

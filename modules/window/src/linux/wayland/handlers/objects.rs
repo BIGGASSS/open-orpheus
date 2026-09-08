@@ -49,6 +49,14 @@ pub(crate) fn on_get_pointer(conn: &mut WaylandConn, msg: &WlMessage) -> Action 
     Action::Forward
 }
 
+pub(crate) fn on_get_touch(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
+    if let Some(new_id) = msg.u32_arg(8) {
+        conn.ifaces.insert(new_id, Iface::WlTouch);
+        conn.touch_seat.insert(new_id, msg.object_id);
+    }
+    Action::Forward
+}
+
 pub(crate) fn on_get_xdg_surface(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     if let (Some(xdg_id), Some(wl_id)) = (msg.u32_arg(8), msg.u32_arg(12)) {
         conn.ifaces.insert(xdg_id, Iface::XdgSurface);
@@ -82,6 +90,11 @@ pub(crate) fn on_destroy(fd: RawFd, conn: &mut WaylandConn, msg: &WlMessage) -> 
 }
 
 pub(crate) fn on_pointer_release(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
+    conn.purge(msg.object_id);
+    Action::Forward
+}
+
+pub(crate) fn on_touch_release(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     conn.purge(msg.object_id);
     Action::Forward
 }
