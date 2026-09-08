@@ -62,7 +62,7 @@ async function withTimeout(
 export interface ShutdownOptions {
   flush(): Promise<void>;
   // Must visibly report failure. A failed prompt leaves shutdown blocked.
-  onFailure(error: unknown): Promise<"retry" | "quit">;
+  onFailure(error: unknown): Promise<"retry" | "quit" | "cancel">;
   onPromptFailure(error: unknown): void;
   quit(): void;
   timeoutMs?: number;
@@ -85,7 +85,9 @@ export function createShutdownHandler(options: ShutdownOptions) {
             await withTimeout(options.flush(), options.timeoutMs ?? 15_000);
             break;
           } catch (error) {
-            if ((await options.onFailure(error)) === "quit") break;
+            const choice = await options.onFailure(error);
+            if (choice === "cancel") return;
+            if (choice === "quit") break;
           }
         }
         allowed = true;

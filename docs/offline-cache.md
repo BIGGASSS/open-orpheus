@@ -1,49 +1,82 @@
-# Offline request-cache persistence
+# Offline playlist persistence
 
-The song-list fallback is owned by the downloaded frontend's `api.dbcache`
-module, not the audio-file cache. Its rows live in `webdb.dat`, in
-`requestCache(id, jsonStr)`. `jsonStr` contains `{ id, cache }`, where `cache` is
-itself a JSON-serialized response.
+The downloaded frontend has **two independent offline paths** in `webdb.dat`:
 
-The upstream implementation buffered up to 50 entries for ten minutes. Even its
-forced flush only scheduled an idle callback and cleared the pending map before
-SQLite committed. Awaiting that flush during exit therefore did not guarantee
-persistence. Its startup key scan also chose whichever version happened to be
-returned last, rather than the greatest timestamp. The SDK's `transaction`/`put`
-helpers can swallow SQL errors, so awaiting those helpers alone is insufficient.
+- `requestCache(id, jsonStr)` caches API responses. Its `jsonStr` contains
+  `{ id, cache }`, where `cache` is another JSON-serialized response.
+- Own-playlist views bypass that cache when offline. They read membership/order
+  from `playlistTrackIds` and track objects from `dbTrack`. Both tables store
+  `{ id, jsonStr }`, with the complete row serialized in `jsonStr`.
 
-## Host compatibility fix
+## Playlist snapshots
 
-- `src/main/compat/requestCachePatch.ts` transforms the cache module when
-  `src/main/orpheus.ts` serves JavaScript. It patches both app and sub-app bundles;
-  the signed archive on disk is never edited. Startup selects the greatest
-  timestamp, and subsequent per-key timestamps increase monotonically.
-- `requestCacheRuntime.ts` installs a self-contained persistence implementation.
-  Every successful cache update requests a flush. Writes, superseded-version
-  cleanup, and explicit invalidations are serialized. Pending data is cleared
-  only after the checked native transaction result acknowledges success.
-- Responses arriving during a write or eviction are drained before the shared
-  flush completes. Failures retain pending work and schedule retries. Eviction
-  deletes historical versions too, preventing their resurrection after restart.
-- `src/main/shutdown.ts` makes normal application quit await each trusted frontend
-  frame's flush hook, then the native SQL worker queue barrier. Timeout/failure
-  offers **Retry** or **Quit Anyway**, rather than silently discarding pending data.
+`src/main/compat/playlistCachePatch.ts` patches the shared playlist database
+helpers and the playlist-detail generators in chunks 137 and 142. After merging
+local-only tracks, every successful own-playlist refresh queues an atomic write
+of its track objects and membership/order **before publishing the refreshed UI**.
+The server timestamp no longer gates that write: an equal timestamp, or a local
+reorder timestamp ahead of the server, must not preserve obsolete membership.
+Empty lists and deletions replace the saved list too. Later track-detail fetches
+continue to update `dbTrack` through the checked helper.
 
-No cache reset or database migration is needed. Already-lost responses cannot be
-recovered without another online fetch. Forced process termination, power loss
-before commit, or explicitly choosing Quit Anyway can still lose pending work.
+`playlistCacheRuntime.ts` bypasses SDK transaction/put helpers that swallow SQL
+errors. It snapshots arguments synchronously, checks native transaction results,
+retains failed writes, retries, and contributes to the shutdown barrier. A failed
+save does not turn a successful online response into stale offline UI.
 
-## Updating the frontend package
+## Request cache and shared writers
 
-The patch intentionally verifies every known minified-code anchor before applying
-any changes. An incompatible cache module is refused with an error log instead
-of being partially patched. When upstream changes this module, update the anchors
-and verify the SQL envelope, initialization, response, and invalidation contracts.
-Keep the serialized installer independent of module-scope variables/imports.
+`requestCachePatch.ts` / `requestCacheRuntime.ts` replace upstream's ten-minute
+buffering and idle-scheduled writes. Pending data is cleared only after a checked
+SQLite commit. Legacy startup duplicates are read using the greatest timestamp.
+Reads consult the shared database rather than a renderer's stale version index.
+Offline/error fallback does not require allocating a write ticket.
 
-Regression coverage is in `test/requestCache.test.ts` and
-`test/shutdown.test.ts`; run `pnpm test`. Tests use real temporary SQLite storage,
-an isolated renderer realm, and a small webpack-shaped fixture, without requiring
-the downloaded frontend. Also smoke-test the current downloaded app and sub-app
-bundles after changing the patch, including a short online session followed by a
-normal quit and an offline restart.
+Both persistence runtimes reserve shared SQLite sequence tickets when handling
+updates, not when retrying them. Conditional transactions prevent older retries
+from replacing newer committed updates. The request cache retains per-key
+invalidation high-water marks and privilege barriers so an older pending response
+cannot resurrect an invalidated key. Local later-page invalidations also cancel
+pending writes. Page discovery and size eviction use database snapshots; a page
+first introduced concurrently after discovery can still escape that selection.
+
+Ordering is the order of successful shared ticket reservations, not server
+request-start order. This does not fix stale responses supplied by the server or
+frontend's separate in-memory API cache.
+
+## Failures and shutdown
+
+Normal quit waits for trusted frontend frames' combined flush hooks, then the
+native SQL worker queue barrier. Failures/timeouts offer **Retry**, **Cancel Quit**,
+or **Quit Anyway**. Cancel Quit allows returning to the app to refresh online.
+
+A write with an allocated ticket can retry safely. If initial ticket reservation
+fails and its original ordering cannot be recovered, assigning a new ticket to
+that old snapshot would risk overwriting another renderer's newer data. Instead,
+the queue remains unresolved and shutdown reports the problem. Fetch a fresh
+successful response (for playlist snapshots, covering the retained track rows as
+well) to replace it; it is not silently acknowledged as saved. Playlist ticket
+reservations with a lost acknowledgement recover their original nonce/ticket.
+
+No cache reset or manual migration is needed. Small ordering tables are created
+automatically; per-key high-water marks intentionally survive cache eviction.
+Already-lost responses require another online fetch. Forced termination, power
+loss before commit, and Quit Anyway can still lose memory-resident updates.
+
+## Compatibility and validation
+
+`src/main/orpheus.ts` applies both transformations to served JavaScript. Signed
+archives on disk remain untouched. Every known minified anchor is checked before
+serving a transformed script; incompatible recognized modules are refused with
+an error log. Verify/update anchors and SDK SQL envelopes after frontend updates.
+Keep serialized installers independent of module-scope imports and variables.
+
+Run `pnpm test`. Regression tests use temporary SQLite and isolated renderer VMs,
+including competing writers, invalidation, failed reservations/commits, and quit
+ordering. An optional actual-archive test executes both patched playlist generators
+(including persistence failures and local-only track merging); it skips if the
+proprietary archive is absent.
+
+Still smoke-test the packaged Electron app: refresh changed/reordered/deleted
+songs online, quit normally, restart offline, and repeat across windows. Automated
+storage/generator tests are not a substitute for that end-to-end UI test.

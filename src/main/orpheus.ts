@@ -19,6 +19,7 @@ import {
 import { data as dataDir, storage as storageDir, wasm } from "./folders";
 import { client } from "./request";
 import { patchRequestCache } from "./compat/requestCachePatch";
+import { patchPlaylistCache } from "./compat/playlistCachePatch";
 import logger from "./logger";
 
 class NetworkError extends Error {
@@ -54,14 +55,16 @@ async function loadFromFilePath(path: string): Promise<SimpleResponse> {
     let content = Buffer.from(fileContent);
     if (extname(path).toLowerCase() === ".js") {
       try {
-        content = Buffer.from(patchRequestCache(content.toString("utf8")));
+        content = Buffer.from(
+          patchPlaylistCache(patchRequestCache(content.toString("utf8")))
+        );
       } catch (error) {
         logger.error(
           { path, err: error },
-          "Cannot apply request cache compatibility patch"
+          "Cannot apply offline cache compatibility patch"
         );
         throw new LoadError(
-          "Unsupported frontend request cache implementation",
+          "Unsupported frontend offline cache implementation",
           500
         );
       }

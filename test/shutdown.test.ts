@@ -194,6 +194,32 @@ test("failure prompts and retries before permitting quit", async (t) => {
   t.deepEqual(calls, ["disk full", "quit"]);
 });
 
+test("cancel quit returns to the app and permits a later quit attempt", async (t) => {
+  let attempts = 0;
+  let quits = 0;
+  const handler = createShutdownHandler({
+    async flush() {
+      if (++attempts === 1) throw new Error("refresh required");
+    },
+    async onFailure() {
+      return "cancel";
+    },
+    onPromptFailure() {
+      t.fail();
+    },
+    quit() {
+      quits++;
+    },
+  });
+  handler({ preventDefault() {} });
+  await tick();
+  t.is(quits, 0);
+  handler({ preventDefault() {} });
+  await tick();
+  t.is(attempts, 2);
+  t.is(quits, 1);
+});
+
 test("timeout requires explicit Quit Anyway even with repeated quit requests", async (t) => {
   const prompted = deferred();
   const choice = deferred();

@@ -487,13 +487,13 @@ app.on(
         type: "warning",
         title: "Open Orpheus",
         message: "The request cache could not be saved before quitting.",
-        detail: `${toError(error).message}\n\nRetry to wait for the cache to be saved, or Quit Anyway to exit with possible loss of unsaved cache data.`,
-        buttons: ["Retry", "Quit Anyway"],
+        detail: `${toError(error).message}\n\nRetry to wait for the cache to be saved, Cancel Quit to return to the app and refresh online, or Quit Anyway to exit with possible loss of unsaved cache data.`,
+        buttons: ["Retry", "Quit Anyway", "Cancel Quit"],
         defaultId: 0,
-        cancelId: 0,
+        cancelId: 2,
         noLink: true,
       });
-      return response === 1 ? "quit" : "retry";
+      return response === 1 ? "quit" : response === 2 ? "cancel" : "retry";
     },
     onPromptFailure(error) {
       logger.error(
