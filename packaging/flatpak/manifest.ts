@@ -42,7 +42,6 @@ export function baseManifest(ctx: ManifestContext, appModule: unknown) {
     sdk: SDK,
     base: BASE,
     "base-version": ctx.baseVersion,
-    branch: ctx.branch ?? "stable",
     command: DESKTOP_EXEC,
     "separate-locales": false,
     "finish-args": ctx.finishArgs,
