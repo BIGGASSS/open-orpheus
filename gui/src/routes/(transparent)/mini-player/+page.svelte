@@ -23,6 +23,7 @@
   import { lyricsBridgeEmitter, getLyrics } from "$lib/lyrics";
   import LyricsComponent from "./Lyrics.svelte";
   import { setFont } from "$lib/font";
+  import { onpointerdrag } from "$lib/pointer";
 
   const api = getBridge<MiniPlayerContract>("miniPlayer");
 
@@ -139,11 +140,9 @@
 <div
   class="flex h-12.5 touch-none items-center gap-2"
   style:background={style?.background}
-  onpointerdown={(e) => {
-    if (e.button != 0) return; // Only left button
-    e.preventDefault();
+  {@attach onpointerdrag(() => {
     api.dragWindow();
-  }}
+  })}
   oncontextmenu={(e) => {
     e.preventDefault();
     api.fireCall("player.oncontextmenu");
