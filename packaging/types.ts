@@ -5,6 +5,8 @@
 export interface MakerDebOptions {
   /** Skip the build-dependency check (safe: prebuilt mode compiles nothing). Defaults to true. */
   nodeps?: boolean;
+  /** Empty the maker's output directory (`out/make/deb/<arch>`) before building. Defaults to true. */
+  clean?: boolean;
   /** Package name (e.g. `open-orpheus`). Defaults to package.json `name`. */
   name?: string;
   /** Debian section (e.g. `sound`). Defaults to `"sound"`. */
@@ -24,6 +26,8 @@ export interface MakerDebOptions {
 export interface MakerRpmOptions {
   /** Skip the build-dependency check (safe: prebuilt mode compiles nothing). Defaults to true. */
   nodeps?: boolean;
+  /** Empty the maker's output directory (`out/make/rpm/<arch>`) before building. Defaults to true. */
+  clean?: boolean;
   /** Package name (e.g. `open-orpheus`). Defaults to package.json `name`. */
   name?: string;
   /** Short description, used in the spec `Summary` field. */
@@ -44,6 +48,8 @@ export interface MakerFlatpakOptions {
   id?: string;
   /** Executable/app name (e.g. `open-orpheus`). Defaults to package.json `name`. */
   name?: string;
+  /** Empty the maker's output directory (`out/make/flatpak/<arch>`) before building. Defaults to true. */
+  clean?: boolean;
   /** Path (relative to the project) to the AppStream metainfo. Defaults to `packaging/flatpak/metainfo.xml`. */
   metainfo?: string;
   /** Runtime version (e.g. `25.08`). Defaults to `"25.08"`. */

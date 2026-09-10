@@ -5,6 +5,7 @@ import type { ForgePlatform } from "@electron-forge/shared-types";
 import type { MakerDebOptions } from "../packaging/types.ts";
 
 import { buildDeb } from "../packaging/deb/source.ts";
+import { nodeArch } from "../packaging/common/arch.ts";
 import { makeInStaging } from "../packaging/common/maker.ts";
 
 /**
@@ -22,14 +23,18 @@ export default class MakerDeb extends MakerBase<MakerDebOptions> {
   }
 
   async make(opts: MakerOptions): Promise<string[]> {
-    const { dir, makeDir } = opts;
-    // Build everything in a temp staging dir; only the .deb is moved out.
-    return makeInStaging(resolve(makeDir, "deb"), (staging) =>
-      buildDeb({
-        outDir: staging,
-        prebuilt: dir,
-        nodeps: this.config.nodeps ?? true,
-      })
+    const { dir, makeDir, targetArch } = opts;
+    // Built in a temp staging dir; only the .deb is moved to the out dir.
+    const outDir = resolve(makeDir, "deb", nodeArch(targetArch));
+    return makeInStaging(
+      outDir,
+      (staging) =>
+        buildDeb({
+          outDir: staging,
+          prebuilt: dir,
+          nodeps: this.config.nodeps ?? true,
+        }),
+      this.config.clean ?? true
     );
   }
 }

@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 
 import { createProjectTarball } from "../common/archive.ts";
 import { createPrebuiltBundle } from "../common/prebuilt.ts";
+import { cleanOutDir } from "../common/util.ts";
 import { createSpecFile } from "./spec.ts";
 
 const execFile = promisify(execFileCb);
@@ -12,8 +13,10 @@ const execFile = promisify(execFileCb);
 export interface BuildSrpmOptions {
   /** Project root. Defaults to the repository root. */
   projectRoot?: string;
-  /** Directory that receives the `.src.rpm`. Defaults to `out/make/srpm`. */
+  /** Directory that receives the `.src.rpm`; emptied before building. Defaults to `out/make/srpm`. */
   outDir?: string;
+  /** Empty `outDir` before building. Defaults to true. */
+  clean?: boolean;
   /** Install the build toolchain (rust/node/pnpm) inside `%build`. Defaults to true. */
   installTools?: boolean;
   /** Pass `--nodeps` to rpmbuild to skip the build-dependency check. Defaults to false. */
@@ -34,6 +37,9 @@ export async function buildSrpm(
   const projectRoot =
     options.projectRoot ?? resolve(import.meta.dirname, "../..");
   const outDir = options.outDir ?? resolve(projectRoot, "out/make/srpm");
+  // Empty the directory first so stale artifacts from earlier runs (e.g. an
+  // older version) can't be mistaken for this build's output.
+  await cleanOutDir(outDir, options.clean);
 
   const pkg = JSON.parse(
     await readFile(resolve(projectRoot, "package.json"), "utf-8")

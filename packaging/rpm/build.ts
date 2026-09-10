@@ -1,10 +1,15 @@
 import { resolve } from "node:path";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 
+import { rpmArch } from "../common/arch.ts";
 import { runStreaming } from "../common/process.ts";
+import { cleanOutDir } from "../common/util.ts";
 import { buildSrpm, type BuildSrpmOptions } from "./srpm.ts";
 
-export type BuildRpmOptions = BuildSrpmOptions;
+export interface BuildRpmOptions extends BuildSrpmOptions {
+  /** Node/Electron arch name (e.g. `x64`) used in the default `outDir`. Defaults to the host arch. */
+  arch?: string;
+}
 
 /**
  * Build binary RPMs: generate the SRPM (with an optional `prebuilt` app
@@ -16,12 +21,20 @@ export async function buildRpm(
 ): Promise<string[]> {
   const projectRoot =
     options.projectRoot ?? resolve(import.meta.dirname, "../..");
-  const outDir = options.outDir ?? resolve(projectRoot, "out/make/rpm");
+  const outDir =
+    options.outDir ??
+    resolve(projectRoot, "out/make/rpm", rpmArch(options.arch));
+  // Empty the directory first so stale artifacts from earlier runs (e.g. an
+  // older version) can't be mistaken for this build's output.
+  await cleanOutDir(outDir, options.clean);
 
   const srpms = await buildSrpm({
     ...options,
     projectRoot,
     outDir: resolve(outDir, "srpm"),
+    // The SRPM is a private intermediate here, so it is always rebuilt from
+    // scratch regardless of the caller's `clean` choice.
+    clean: true,
   });
 
   const topdir = resolve(outDir, "rpmbuild");

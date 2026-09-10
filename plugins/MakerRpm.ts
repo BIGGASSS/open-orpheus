@@ -5,6 +5,7 @@ import type { ForgePlatform } from "@electron-forge/shared-types";
 import type { MakerRpmOptions } from "../packaging/types.ts";
 
 import { buildRpm } from "../packaging/rpm/build.ts";
+import { rpmArch } from "../packaging/common/arch.ts";
 import { makeInStaging } from "../packaging/common/maker.ts";
 
 /**
@@ -22,14 +23,18 @@ export default class MakerRpm extends MakerBase<MakerRpmOptions> {
   }
 
   async make(opts: MakerOptions): Promise<string[]> {
-    const { dir, makeDir } = opts;
-    // Build everything in a temp staging dir; only the .rpm is moved out.
-    return makeInStaging(resolve(makeDir, "rpm"), (staging) =>
-      buildRpm({
-        outDir: staging,
-        prebuilt: dir,
-        nodeps: this.config.nodeps ?? true,
-      })
+    const { dir, makeDir, targetArch } = opts;
+    // Built in a temp staging dir; only the .rpm is moved to the out dir.
+    const outDir = resolve(makeDir, "rpm", rpmArch(targetArch));
+    return makeInStaging(
+      outDir,
+      (staging) =>
+        buildRpm({
+          outDir: staging,
+          prebuilt: dir,
+          nodeps: this.config.nodeps ?? true,
+        }),
+      this.config.clean ?? true
     );
   }
 }

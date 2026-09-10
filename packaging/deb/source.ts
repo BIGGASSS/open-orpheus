@@ -3,9 +3,11 @@ import { cp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { nodeArch } from "../common/arch.ts";
 import { createProjectTarball } from "../common/archive.ts";
 import { createPrebuiltBundle } from "../common/prebuilt.ts";
 import { runStreaming } from "../common/process.ts";
+import { cleanOutDir } from "../common/util.ts";
 import {
   createControlFile,
   resolveControlOptions,
@@ -17,7 +19,12 @@ const execFile = promisify(execFileCb);
 
 export interface DebOptions {
   projectRoot?: string;
+  /** Directory that receives the `.deb`; emptied before building. Defaults to `out/make/deb/<nodeArch>`. */
   outDir?: string;
+  /** Node/Electron arch name (e.g. `x64`) used in the default `outDir`. Defaults to the host arch. */
+  arch?: string;
+  /** Empty `outDir` before building. Defaults to true. */
+  clean?: boolean;
   /** Bake the toolchain install (rust/node/pnpm) into the rendered `debian/rules`. Defaults to true. */
   installTools?: boolean;
   /** Pass `-d` to dpkg-buildpackage to skip the build-dependency check. Defaults to false. */
@@ -143,7 +150,12 @@ async function stageSource(
 export async function buildDeb(options: DebOptions = {}): Promise<string[]> {
   const projectRoot =
     options.projectRoot ?? resolve(import.meta.dirname, "../..");
-  const outDir = options.outDir ?? resolve(projectRoot, "out/make/deb");
+  const outDir =
+    options.outDir ??
+    resolve(projectRoot, "out/make/deb", nodeArch(options.arch));
+  // Empty the directory first so stale artifacts from earlier runs (e.g. an
+  // older version) can't be mistaken for this build's output.
+  await cleanOutDir(outDir, options.clean);
   const { pkg, debOptions } = await resolveMeta(projectRoot);
 
   const name = debOptions.name;
@@ -189,6 +201,9 @@ export async function buildDebSource(
   const projectRoot =
     options.projectRoot ?? resolve(import.meta.dirname, "../..");
   const outDir = options.outDir ?? resolve(projectRoot, "out/make/deb-src");
+  // Empty the directory first so stale artifacts from earlier runs aren't
+  // mistaken for this build's output.
+  await cleanOutDir(outDir, options.clean);
   const { pkg, debOptions } = await resolveMeta(projectRoot);
 
   const name = debOptions.name;

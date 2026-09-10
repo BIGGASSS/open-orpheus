@@ -59,7 +59,7 @@
     "@yxim/nim-web-sdk": "^9.21.14",
     "cookie": "^2.0.1",
     "ejs": "^6.0.1",
-    "electron": "43.3.0",
+    "electron": "44.3.0",
     "emittery": "^2.0.0",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",

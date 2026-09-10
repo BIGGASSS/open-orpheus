@@ -23,6 +23,7 @@ const files = await buildDebSource({
   installTools: flags.installTools,
   nodeps: flags.nodeps,
   prebuilt,
+  clean: flags.clean,
 });
 
 console.log("Debian source package created:");

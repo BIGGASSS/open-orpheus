@@ -16,10 +16,13 @@ const prebuilt = flags.prebuilt
 
 // Build the SRPM (with the packaged app bundled as Source1 when `--prebuilt`),
 // then `rpmbuild --rebuild` it into binary RPMs.
+// Output lands in `out/make/rpm/<rpmArch>` (`--arch`, defaulting to the host arch).
 const rpms = await buildRpm({
   installTools: flags.installTools,
   nodeps: flags.nodeps,
   prebuilt,
+  arch: flags.arch,
+  clean: flags.clean,
 });
 
 console.log("RPM(s) created:");

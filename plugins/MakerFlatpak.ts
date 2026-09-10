@@ -8,6 +8,7 @@ import type { ForgePlatform } from "@electron-forge/shared-types";
 import type { MakerFlatpakOptions } from "../packaging/types.ts";
 
 import { createDirectoryTarball } from "../packaging/common/archive.ts";
+import { flatpakArch } from "../packaging/common/arch.ts";
 import { makeInStaging } from "../packaging/common/maker.ts";
 import { runStreaming } from "../packaging/common/process.ts";
 import {
@@ -48,12 +49,11 @@ export default class MakerFlatpak extends MakerBase<MakerFlatpakOptions> {
     // Flathub apps live on the `stable` branch (default in baseManifest too).
     const branch = "stable";
     // Forge arches (x64/arm64) differ from Flatpak's (x86_64/aarch64).
-    const flatpakArch =
-      { x64: "x86_64", arm64: "aarch64", ia32: "i386" }[targetArch] ??
-      targetArch;
+    const fpArch = flatpakArch(targetArch);
+    const outDir = resolve(makeDir, "flatpak", fpArch);
 
     // Do all the work in a temp staging dir; only the .flatpak is moved out.
-    return makeInStaging(resolve(makeDir, "flatpak"), async (staging) => {
+    const build = async (staging: string) => {
       // 1. Generate the scaffold on the host (node_modules is available here),
       //    mirroring the deb/rpm prebuilt flow — the sandbox must not run node.
       const payload = join(staging, "payload");
@@ -127,10 +127,7 @@ export default class MakerFlatpak extends MakerBase<MakerFlatpakOptions> {
 
       // 5. Export the repo as a single-file bundle, named per Flatpak
       //    convention: <app-id>_<branch>_<arch>.flatpak.
-      const bundle = resolve(
-        staging,
-        `${appId}_${branch}_${flatpakArch}.flatpak`
-      );
+      const bundle = resolve(staging, `${appId}_${branch}_${fpArch}.flatpak`);
       await runStreaming("flatpak", [
         "build-bundle",
         repo,
@@ -140,6 +137,8 @@ export default class MakerFlatpak extends MakerBase<MakerFlatpakOptions> {
       ]);
 
       return [bundle];
-    });
+    };
+
+    return makeInStaging(outDir, build, this.config.clean ?? true);
   }
 }

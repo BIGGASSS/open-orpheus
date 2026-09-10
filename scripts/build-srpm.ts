@@ -18,6 +18,7 @@ const srpms = await buildSrpm({
   installTools: flags.installTools,
   nodeps: flags.nodeps,
   prebuilt,
+  clean: flags.clean,
 });
 
 console.log("SRPM(s) created:");

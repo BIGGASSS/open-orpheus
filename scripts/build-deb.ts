@@ -17,10 +17,13 @@ const prebuilt = flags.prebuilt
 // Bake the toolchain install (rust/node/pnpm) into debian/rules. Opt-in via
 // `--install-tools`; defaults to off (assumes a preinstalled toolchain).
 // With `--prebuilt`, bundle the packaged app and skip compiling.
+// Output lands in `out/make/deb/<arch>` (`--arch`, defaulting to the host arch).
 const debs = await buildDeb({
   installTools: flags.installTools,
   nodeps: flags.nodeps,
   prebuilt,
+  arch: flags.arch,
+  clean: flags.clean,
 });
 
 console.log("DEB(s) created:");

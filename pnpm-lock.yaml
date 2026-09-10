@@ -136,8 +136,8 @@ importers:
         specifier: ^6.0.1
         version: 6.0.1
       electron:
-        specifier: 43.3.0
-        version: 43.3.0(supports-color@8.1.1)
+        specifier: 44.3.0
+        version: 44.3.0(supports-color@8.1.1)
       emittery:
         specifier: ^2.0.0
         version: 2.0.0
@@ -3069,8 +3069,8 @@ packages:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
     engines: {node: '>=8.0.0'}
 
-  electron@43.3.0:
-    resolution: {integrity: sha512-nLlvu0WFjftWsSaTkV2B/c4NDuJBspTyXu8vKSQ6vLvFt8uG3NgN49LLKcXddwX0GqVvAQDhciWp+4xOdTdhew==}
+  electron@44.3.0:
+    resolution: {integrity: sha512-St9EV7F2VtYaYWD2qaAjBwUgKxx39eJOUsUJ5+/1113sqbVfNqv4Dbm/W1rN7qmYSPa+mWwR6yr+b7MfgjgVfQ==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -8864,7 +8864,7 @@ snapshots:
       - supports-color
     optional: true
 
-  electron@43.3.0(supports-color@8.1.1):
+  electron@44.3.0(supports-color@8.1.1):
     dependencies:
       '@electron-internal/extract-zip': 1.0.2
       '@electron/get': 5.0.0(supports-color@8.1.1)

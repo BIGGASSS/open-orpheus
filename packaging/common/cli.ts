@@ -5,25 +5,29 @@ export interface CliOptions {
   nodeps: boolean;
   /** Reuse the prebuilt packaged Electron app instead of compiling. Defaults to false. */
   prebuilt: boolean;
+  /** Empty the output directory before building. Defaults to true (`--no-clean` to keep it). */
+  clean: boolean;
   /** Architecture of the prebuilt app variant (e.g. `x64`, `arm64`). */
   arch?: string;
 }
 
 /**
  * Parse the shared packaging CLI flags:
- * `--install-tools`, `--nodeps`, `--prebuilt`, `--arch <arch>`.
+ * `--install-tools`, `--nodeps`, `--prebuilt`, `--no-clean`, `--arch <arch>`.
  */
 export function parseFlags(argv: string[]): CliOptions {
   const options: CliOptions = {
     installTools: false,
     nodeps: false,
     prebuilt: false,
+    clean: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--install-tools") options.installTools = true;
     else if (arg === "--nodeps") options.nodeps = true;
     else if (arg === "--prebuilt") options.prebuilt = true;
+    else if (arg === "--no-clean") options.clean = false;
     else if (arg === "--arch") options.arch = argv[++i];
   }
   return options;
