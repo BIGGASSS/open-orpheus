@@ -1,2 +1,20 @@
+* Thu Sep 10 2026 YUCLing <luotianyi@luotianyi.me> - 0.17.0-1
+- Added AVS3-P3 decoding support.
+- Added scheduled shutdown support.
+- Added Pino logging.
+- Desktop lyrics offset can now be adjusted with the mouse wheel.
+- Added complete system media integration.
+- Added a notification when resource packs are updated.
+- Windows are now created on demand.
+- Fixed proxy settings not being fully applied.
+- Fixed auto-update settings not being saved.
+- Fixed missing song covers in system integration for local music.
+- Fixed touch screen support.
+- Improved the desktop lyrics interaction experience.
+- Refactored the Linux man-in-the-middle layer.
+- Migrated from CJS to ESM.
+- Refactored packaging.
+- Updated dependencies and Electron.
+
 * Thu Aug 27 2026 YUCLing <luotianyi@luotianyi.me> - 0.16.2-1
 - Initial RPM package.
