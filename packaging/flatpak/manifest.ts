@@ -24,7 +24,7 @@ export interface ManifestContext {
   runtimeVersion: string;
   baseVersion: string;
   finishArgs: string[];
-  /** Flatpak branch (default: "stable"). */
+  /** Flatpak branch (default: none). */
   branch?: string;
   /** SDK extensions. Prebuilt builds need none (default: node24 for source builds). */
   sdkExtensions?: string[];
@@ -47,6 +47,9 @@ export function baseManifest(ctx: ManifestContext, appModule: unknown) {
     "finish-args": ctx.finishArgs,
     modules: [...(ctx.extraModules ?? []), appModule],
   };
+  if (ctx.branch) {
+    manifest["branch"] = ctx.branch;
+  }
   if (sdkExtensions.length > 0) {
     manifest["sdk-extensions"] = sdkExtensions;
   }
