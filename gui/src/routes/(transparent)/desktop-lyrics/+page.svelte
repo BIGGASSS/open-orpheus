@@ -22,6 +22,7 @@
   } from "$lib/lyrics";
   import * as settings from "$lib/settings";
   import multihover from "$lib/multihover";
+  import { onpointerdrag } from "$lib/pointer";
 
   const api = getBridge<DesktopLyricsContract>("desktopLyrics");
 
@@ -235,7 +236,7 @@
     )}
     class:cursor-grab={!locked}
     class:flex-col={!lyricStyle.vertical}
-    onpointerdown={onDrag}
+    {@attach onpointerdrag(onDrag)}
     onpointerenter={() => {
       clearTimeout(disableTimer);
     }}
