@@ -18,7 +18,7 @@ import { parseLrc, parseYrc } from "../lyrics/parse";
 import { sanitizeRelativePath } from "../util";
 import {
   createDesktopLyricsPreview,
-  desktopLyricsWindow,
+  window as desktopLyricsWindow,
   lyricsStyle,
   refreshLyricsStyle,
   setLyricsLocked,
@@ -42,15 +42,31 @@ import { mediaSession } from "../mediaSession";
 let listItems: ListElement[] = [];
 let currentPlay: string | null = null;
 
-export type PlayInfo = {
-  albumId: string;
-  albumName: string;
-  artistName: string;
-  playId: string;
-  songName: string;
-  songType: string;
-  url: string;
-};
+export type PlayInfo =
+  | {
+      songType: "normal";
+      albumId: string;
+      albumName: string;
+      artistName: string;
+      playId: string;
+      songName: string;
+      url: string;
+    }
+  | {
+      songType: "local";
+      artistName: string;
+      playId: string;
+      songName: string;
+    }
+  | {
+      songType: "djradio";
+      albumId: string;
+      albumName: string;
+      artistName: string;
+      playId: string;
+      songName: string;
+      url: "";
+    };
 
 registerCallHandler<[PlayInfo], void>("player.setInfo", (_event, playInfo) => {
   mediaSession.setMetadata(
@@ -59,13 +75,26 @@ registerCallHandler<[PlayInfo], void>("player.setInfo", (_event, playInfo) => {
           id: playInfo.playId,
           title: playInfo.songName,
           artist: playInfo.artistName,
-          album: playInfo.albumName,
-          url: playInfo.url,
+          // Local tracks carry no album; the other variants always do.
+          album: "albumName" in playInfo ? playInfo.albumName : "",
         }
       : null
   );
-  updatePlayInfo(playInfo);
-  updateLyricsPlayInfo(playInfo);
+  updatePlayInfo({
+    albumId: "albumId" in playInfo ? playInfo.albumId : "",
+    albumName: "albumName" in playInfo ? playInfo.albumName : "",
+    artistName: playInfo.artistName,
+    playId: playInfo.playId,
+    songName: playInfo.songName,
+    songType: playInfo.songType,
+    url: "url" in playInfo ? playInfo.url : "",
+  });
+  updateLyricsPlayInfo({
+    albumId: "albumId" in playInfo ? playInfo.albumId : "",
+    albumName: "albumName" in playInfo ? playInfo.albumName : "",
+    artistName: playInfo.artistName,
+    songName: playInfo.songName,
+  });
 });
 
 type ListElement = {
@@ -118,6 +147,8 @@ registerCallHandler<[string], [boolean]>(
 
 registerCallHandler<[string], [boolean]>("player.setCover", (_event, url) => {
   updateCoverUrl(url);
+  // Album art also feeds the OS media sessions (MPRIS / SMTC / Now Playing).
+  void mediaSession.setCover(url);
   return [true];
 });
 
@@ -231,8 +262,6 @@ registerCallHandler<[boolean], [boolean]>(
 registerCallHandler<[boolean], [boolean]>(
   "player.setDesktopLyricTopMost",
   (event, topMost) => {
-    if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed())
-      return [false];
     desktopLyricsWindow.setAlwaysOnTop(topMost);
     return [true];
   }

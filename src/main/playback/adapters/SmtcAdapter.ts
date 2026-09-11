@@ -1,12 +1,12 @@
 import Emittery from "emittery";
 
 import { MediaSession } from "@open-orpheus/smtc";
+import { nativeArtUrl } from "../artwork";
 import { PlaybackStatus, TrackInfo } from "../types";
 import {
   MediaSessionAdapter,
   PlayerCommandEvents,
 } from "./MediaSessionAdapter";
-import { imageSize } from "../../../util";
 
 // SMTC uses 100 ns ticks; we use seconds.
 const TIME_RATIO = 10_000_000;
@@ -18,6 +18,8 @@ export default class SmtcAdapter
 {
   private mediaSession: MediaSession;
 
+  private track: TrackInfo | null = null;
+  private artUrl: string | null = null;
   private position: number | null = null;
   private duration: number | null = null;
 
@@ -53,13 +55,25 @@ export default class SmtcAdapter
   }
 
   onTrack(track: TrackInfo | null): void {
+    this.track = track;
+    this.artUrl = null; // album art arrives separately via onArtwork
+    this.pushMetadata();
+  }
+
+  onArtwork(artUrl: string | null): void {
+    if (!this.track) return; // no current song
+    this.artUrl = artUrl;
+    this.pushMetadata();
+  }
+
+  private pushMetadata(): void {
     this.mediaSession.setMetadata(
-      track
+      this.track
         ? {
-            title: track.title,
-            artist: track.artist,
-            album: track.album,
-            artUrl: imageSize(track.url, 512),
+            title: this.track.title,
+            artist: this.track.artist,
+            album: this.track.album,
+            artUrl: this.artUrl ? nativeArtUrl(this.artUrl) : undefined,
           }
         : null
     );

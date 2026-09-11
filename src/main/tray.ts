@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import os from "node:os";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   app,
@@ -19,7 +19,7 @@ import iconFilename from "../../assets/icon_256.png?no-inline";
 
 let quitRequested = false;
 
-const defaultIconPath = resolve(__dirname, `.${iconFilename}`);
+const defaultIconPath = fileURLToPath(iconFilename);
 const defaultMenuItems: MenuItemConstructorOptions[] = [
   {
     label: "管理 Open Orpheus",

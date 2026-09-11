@@ -1,11 +1,12 @@
-//! Connection-setup injection: the two requests sent immediately after the X11
-//! handshake (InternAtom `_NET_WM_MOVERESIZE`, QueryExtension `SHAPE`). Their
-//! replies are dropped and parsed by [`super::replies`].
+//! Connection-setup injection: the requests sent immediately after the X11
+//! handshake (InternAtom `_NET_WM_MOVERESIZE`, QueryExtension `SHAPE` and
+//! `XInputExtension`). Their replies are dropped and parsed by
+//! [`super::replies`].
 
 use super::super::codec::*;
 use super::super::state::{InjectedType, X11Conn};
 
-pub(crate) fn initial_requests(conn: &mut X11Conn) -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn initial_requests(conn: &mut X11Conn) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut req1 = [0u8; 28];
     req1[0] = 16; // InternAtom
     write_u16(&mut req1[2..4], 7, conn.is_le);
@@ -26,10 +27,22 @@ pub(crate) fn initial_requests(conn: &mut X11Conn) -> (Vec<u8>, Vec<u8>) {
     conn.injected_seqs
         .insert(conn.server_seq, InjectedType::QueryExtensionShape);
 
+    let mut req3 = [0u8; 24];
+    req3[0] = 98; // QueryExtension
+    write_u16(&mut req3[2..4], 6, conn.is_le);
+    write_u16(&mut req3[4..6], 15, conn.is_le);
+    req3[8..23].copy_from_slice(b"XInputExtension");
+    conn.server_seq = conn.server_seq.wrapping_add(1);
+    conn.seq_offset = conn.seq_offset.wrapping_add(1);
+    conn.injected_seqs
+        .insert(conn.server_seq, InjectedType::QueryExtensionXInput);
+
     // Offset takes effect at the first injected sequence (server_seq 1);
-    // see `X11Conn::begin_injected_requests` for why this matters.
+    // see `X11Conn::begin_injected_requests` for why this matters. These
+    // setup requests never emit events themselves, so their replies being
+    // dropped means the exact transition base is immaterial to the client.
     conn.offset_transitions
         .push((conn.server_seq.wrapping_sub(1), conn.seq_offset));
 
-    (req1.to_vec(), req2.to_vec())
+    (req1.to_vec(), req2.to_vec(), req3.to_vec())
 }

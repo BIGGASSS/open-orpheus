@@ -4,7 +4,7 @@ import path from "node:path";
 import { BrowserWindow, screen } from "electron";
 
 import { setMainWindow } from "../window";
-import { hideMiniPlayerWindow } from "./mini-player";
+import { window as miniPlayerWindow } from "./mini-player";
 import {
   LifecycleState,
   state as lifecycleState,
@@ -44,7 +44,7 @@ export default async function createMainWindow() {
     show: false,
     frame: false,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(import.meta.dirname, "preload.js"),
       additionalArguments: ["--preload-channel=main"],
     },
   });
@@ -100,7 +100,7 @@ export default async function createMainWindow() {
 
   mainWindow.on("show", () => {
     // Make sure mini player doesn't show together with main window
-    hideMiniPlayerWindow();
+    miniPlayerWindow.hide();
   });
 
   mainWindow.on("close", (e) => {

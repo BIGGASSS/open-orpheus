@@ -18,13 +18,12 @@ export enum PlaybackChange {
   Seeking = "seeking",
 }
 
-/** Track metadata. `url` is the album-art URL. */
+/** Track metadata. */
 export interface TrackInfo {
   id: string;
   title: string;
   artist: string;
   album: string;
-  url: string;
 }
 
 /**

@@ -23,6 +23,7 @@
   import { lyricsBridgeEmitter, getLyrics } from "$lib/lyrics";
   import LyricsComponent from "./Lyrics.svelte";
   import { setFont } from "$lib/font";
+  import { onpointerdrag } from "$lib/pointer";
 
   const api = getBridge<MiniPlayerContract>("miniPlayer");
 
@@ -137,13 +138,11 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="flex h-12.5 items-center gap-2"
+  class="flex h-12.5 touch-none items-center gap-2"
   style:background={style?.background}
-  onmousedown={(e) => {
-    if (e.button != 0) return; // Only left button
-    e.preventDefault();
+  {@attach onpointerdrag(() => {
     api.dragWindow();
-  }}
+  })}
   oncontextmenu={(e) => {
     e.preventDefault();
     api.fireCall("player.oncontextmenu");
@@ -152,7 +151,7 @@
 >
   <button
     class="cursor-pointer"
-    onmousedown={noPropagation}
+    onpointerdown={noPropagation}
     onclick={() => api.fireCall("player.onrequestchangetomain", "")}
   >
     {#if togetherStatus.status === "alone"}
@@ -228,14 +227,14 @@
       class="size-6 cursor-pointer"
       imgClass="size-full"
       images={style?.prevButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() => api.fireCall("player.onaction", "prev", "miniPlayer")}
     />
     <IconButton
       class="size-10 cursor-pointer"
       imgClass="size-full"
       images={playState.playing ? style?.pauseButton : style?.playButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() =>
         api.fireCall(
           "player.onaction",
@@ -247,7 +246,7 @@
       class="size-6 cursor-pointer"
       imgClass="size-full"
       images={style?.nextButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() => api.fireCall("player.onaction", "next", "miniPlayer")}
     />
   </div>
@@ -256,7 +255,7 @@
       class="size-6 cursor-pointer"
       imgClass="size-full"
       images={likeMark === 1 ? style?.lovedButton : style?.loveButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() => api.fireCall("player.onlikeclick", "normal")}
     />
   {:else}
@@ -264,7 +263,7 @@
       class="size-6 cursor-pointer"
       imgClass="size-full"
       images={favour ? style?.favouredButton : style?.favourButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() => api.fireCall("player.onfavour", favour ? 0 : 1)}
     />
   {/if}
@@ -273,7 +272,7 @@
     class="size-6 cursor-pointer"
     imgClass="size-full mt-px"
     images={mute ? style?.volumeMutedButton : style?.volumeButton}
-    onmousedown={noPropagation}
+    onpointerdown={noPropagation}
     onclick={() =>
       showVolumeBar
         ? (showVolumeBar = false)
@@ -283,7 +282,7 @@
     class="size-4 cursor-pointer"
     imgClass="size-full mt-0.5"
     images={style?.listButton}
-    onmousedown={noPropagation}
+    onpointerdown={noPropagation}
     onclick={() => (showList = !showList)}
   />
   <div class="flex h-full flex-col gap-0.5 p-1">
@@ -291,14 +290,14 @@
       class="size-2.5 cursor-pointer"
       imgClass="size-full"
       images={style?.closeButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() => api.fireCall("player.onrequestclose", "")}
     />
     <IconButton
       class="size-2.5 cursor-pointer"
       imgClass="size-full"
       images={style?.toWebButton}
-      onmousedown={noPropagation}
+      onpointerdown={noPropagation}
       onclick={() => api.fireCall("player.onrequestchangetomain", "")}
     />
   </div>

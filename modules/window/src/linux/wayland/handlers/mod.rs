@@ -7,13 +7,14 @@
 mod objects;
 mod pointer;
 mod title;
+mod touch;
 
 use std::os::fd::RawFd;
 
 use super::codec::{
     EVT_DELETE_ID, Iface, REQ_BIND, REQ_CREATE_SURFACE, REQ_DESTROY, REQ_GET_POINTER,
-    REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_XDG_SURFACE, REQ_SET_TITLE, WL_POINTER_RELEASE,
-    WlMessage,
+    REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_TOUCH, REQ_GET_XDG_SURFACE, REQ_SET_TITLE,
+    WL_POINTER_RELEASE, WL_TOUCH_RELEASE, WlMessage,
 };
 use super::state::WaylandConn;
 
@@ -49,6 +50,7 @@ pub(crate) fn dispatch_request(
         (Iface::WlRegistry, REQ_BIND) => objects::on_bind(conn, msg),
         (Iface::WlCompositor, REQ_CREATE_SURFACE) => objects::on_create_surface(conn, msg),
         (Iface::WlSeat, REQ_GET_POINTER) => objects::on_get_pointer(conn, msg),
+        (Iface::WlSeat, REQ_GET_TOUCH) => objects::on_get_touch(conn, msg),
         (Iface::XdgWmBase, REQ_GET_XDG_SURFACE) => objects::on_get_xdg_surface(conn, msg),
         (Iface::XdgSurface, REQ_GET_TOPLEVEL) => objects::on_get_toplevel(conn, msg, fx),
         (Iface::XdgToplevel, REQ_SET_TITLE) => title::on_set_title(fd, conn, msg),
@@ -56,6 +58,7 @@ pub(crate) fn dispatch_request(
             objects::on_destroy(fd, conn, msg)
         }
         (Iface::WlPointer, WL_POINTER_RELEASE) => objects::on_pointer_release(conn, msg),
+        (Iface::WlTouch, WL_TOUCH_RELEASE) => objects::on_touch_release(conn, msg),
         _ => Action::Forward,
     }
 }
@@ -67,6 +70,10 @@ pub(crate) fn dispatch_event(conn: &mut WaylandConn, msg: &WlMessage, fx: &mut E
 
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::WlPointer) {
         return pointer::on_pointer_event(conn, msg, fx);
+    }
+
+    if conn.ifaces.get(&msg.object_id) == Some(&Iface::WlTouch) {
+        return touch::on_touch_event(conn, msg, fx);
     }
 
     Action::Forward

@@ -23,8 +23,10 @@ export type PlaybackControllerEvents = {
   playbackratechange: number;
   /** Derived: is progress advancing smoothly? (true only while playing) — lyrics. */
   advancingchange: boolean;
-  /** Derived, diffed: track metadata changed. */
+  /** Derived, diffed: track metadata changed (one playId = one song). */
   trackchanged: TrackInfo | null;
+  /** Album art for the current song (separate from `trackchanged`). */
+  coverchanged: string | null;
   /** Derived, diffed: media-session status changed. */
   statuschanged: PlaybackStatus;
   /** Derived, throttled: position for OS media sessions. */
@@ -57,6 +59,7 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
   private lastPositionEmitAt = 0;
   private pendingPosition: number | null = null;
   private positionTimer: ReturnType<typeof setTimeout> | null = null;
+  private cover: string | null = null;
 
   get snapshot(): Readonly<PlaybackSnapshot> {
     return this._snapshot;
@@ -64,7 +67,9 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
 
   /** Frozen seam: `player.setInfo` → `mediaSession.setMetadata`. */
   setTrack(track: TrackInfo | null): void {
-    if (this._snapshot.track?.id === track?.id) return; // unchanged track
+    // A playId uniquely identifies one song, so a same-id `setInfo` (e.g. the
+    // duplicate around `player.setCover`) is not a track change.
+    if (this._snapshot.track?.id === track?.id) return; // unchanged song
     this._snapshot.track = track;
     if (track === null) {
       // No track → always Stopped.
@@ -75,6 +80,13 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
       }
     }
     this.emit("trackchanged", track);
+  }
+
+  /** Frozen seam: `player.setCover` → `mediaSession.setCover`. */
+  applyCover(artUrl: string | null): void {
+    if (this.cover === artUrl) return;
+    this.cover = artUrl;
+    this.emit("coverchanged", artUrl);
   }
 
   applyPosition(position: number | null, seeked = false): void {

@@ -4,9 +4,6 @@ import { dirname, resolve } from "node:path";
 import type { ForgeConfig } from "@electron-forge/shared-types";
 import { MakerSquirrel } from "@electron-forge/maker-squirrel";
 import { MakerZIP } from "@electron-forge/maker-zip";
-import { MakerDeb } from "@electron-forge/maker-deb";
-import { MakerRpm } from "@electron-forge/maker-rpm";
-import { MakerFlatpak } from "@electron-forge/maker-flatpak";
 import { MakerAppImage } from "@reforged/maker-appimage";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
@@ -15,6 +12,10 @@ import { FuseV1Options, FuseVersion } from "@electron/fuses";
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives"; // TODO: Remove in Electron Forge 8
 
 import * as options from "./packaging/options";
+
+import MakerDeb from "./plugins/MakerDeb";
+import MakerFlatpak from "./plugins/MakerFlatpak";
+import MakerRpm from "./plugins/MakerRpm";
 
 const LOCALES = ["en", "en-US", "zh-CN"];
 
@@ -127,18 +128,12 @@ const config: ForgeConfig = {
   makers: [
     new MakerSquirrel(options.squirrel),
     new MakerZIP({}, ["darwin"]),
-    new MakerRpm({
-      options: options.rpm,
-    }),
-    new MakerDeb({
-      options: options.deb,
-    }),
-    new MakerFlatpak({
-      options: options.flatpak,
-    }),
+    new MakerFlatpak(options.flatpak),
     new MakerAppImage({
       options: options.AppImage,
     }),
+    new MakerDeb(options.deb),
+    new MakerRpm(options.rpm),
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
@@ -149,64 +144,69 @@ const config: ForgeConfig = {
         {
           // `entry` is just an alias for `build.lib.entry` in the corresponding file of `config`.
           entry: "src/main.ts",
-          config: "vite.main.config.mts",
+          config: "vite.main.config.ts",
           target: "main",
         },
         {
           entry: "src/preload.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/windows/manage.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/windows/package-download.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/windows/desktop-lyrics.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/windows/desktop-lyrics-preview.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/windows/mini-player.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/windows/menu.ts",
-          config: "vite.preload.config.mts",
+          config: "vite.preload.config.ts",
           target: "preload",
         },
         {
           entry: "src/worklets/pcm-honeypot.ts",
-          config: "vite.worklets.config.mts",
+          config: "vite.worklets.config.ts",
           target: "preload",
         },
         {
           entry: "src/worklets/music-recorder.ts",
-          config: "vite.worklets.config.mts",
+          config: "vite.worklets.config.ts",
           target: "preload",
         },
         {
           entry: "src/worklets/audio-effect.ts",
-          config: "vite.worklets.config.mts",
+          config: "vite.worklets.config.ts",
+          target: "preload",
+        },
+        {
+          entry: "src/worklets/av3a-player.ts",
+          config: "vite.worklets.config.ts",
           target: "preload",
         },
       ],
       renderer: [
         {
           name: "gui",
-          config: "vite.renderer.config.mts",
+          config: "vite.renderer.config.ts",
         },
       ],
     }),

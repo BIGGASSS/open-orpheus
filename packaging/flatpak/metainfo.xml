@@ -62,6 +62,45 @@
   </screenshots>
 
   <releases>
+    <release version="0.17.0" date="2026-09-10">
+      <url type="details">https://github.com/YUCLing/open-orpheus/releases/tag/v0.17.0</url>
+      <description>
+        <ul>
+          <li>Added AVS3-P3 decoding support.</li>
+          <li xml:lang="zh-CN">新增 AVS3-P3 解码支持。</li>
+          <li>Added scheduled shutdown support.</li>
+          <li xml:lang="zh-CN">新增定时关闭支持。</li>
+          <li>Added Pino logging.</li>
+          <li xml:lang="zh-CN">添加 Pino 日志。</li>
+          <li>Desktop lyrics offset can now be adjusted with the mouse wheel.</li>
+          <li xml:lang="zh-CN">桌面歌词支持使用鼠标滚轮调整歌词偏移。</li>
+          <li>Added complete system media integration.</li>
+          <li xml:lang="zh-CN">新增完整的系统媒体集成。</li>
+          <li>Added a notification when resource packs are updated.</li>
+          <li xml:lang="zh-CN">资源包更新时新增提醒。</li>
+          <li>Windows are now created on demand.</li>
+          <li xml:lang="zh-CN">窗口改为按需创建。</li>
+          <li>Fixed proxy settings not being fully applied.</li>
+          <li xml:lang="zh-CN">修复代理设置未完全应用的问题。</li>
+          <li>Fixed auto-update settings not being saved.</li>
+          <li xml:lang="zh-CN">修复自动更新设置不保存的问题。</li>
+          <li>Fixed missing song covers in system integration for local music.</li>
+          <li xml:lang="zh-CN">修复本地音乐的系统集成缺少歌曲封面的问题。</li>
+          <li>Fixed touch screen support.</li>
+          <li xml:lang="zh-CN">修复触屏支持。</li>
+          <li>Improved the desktop lyrics interaction experience.</li>
+          <li xml:lang="zh-CN">改进桌面歌词交互体验。</li>
+          <li>Refactored the Linux man-in-the-middle layer.</li>
+          <li xml:lang="zh-CN">重构 Linux 中间人层。</li>
+          <li>Migrated from CJS to ESM.</li>
+          <li xml:lang="zh-CN">从 CJS 迁移到 ESM。</li>
+          <li>Refactored packaging.</li>
+          <li xml:lang="zh-CN">重构打包。</li>
+          <li>Updated dependencies and Electron.</li>
+          <li xml:lang="zh-CN">更新依赖和 Electron。</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.16.2" date="2026-08-05">
       <url type="details">https://github.com/YUCLing/open-orpheus/releases/tag/v0.16.2</url>
       <description>

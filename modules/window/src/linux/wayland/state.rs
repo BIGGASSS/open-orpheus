@@ -12,6 +12,7 @@ pub(crate) struct WaylandConn {
     pub(crate) ifaces: HashMap<u32, Iface>,
     pub(crate) pointer_focus: HashMap<u32, u32>,
     pub(crate) pointer_seat: HashMap<u32, u32>,
+    pub(crate) touch_seat: HashMap<u32, u32>,
     pub(crate) xdg_to_wl: HashMap<u32, u32>,
     pub(crate) wl_to_top: HashMap<u32, u32>,
     pub(crate) top_to_xdg: HashMap<u32, u32>,
@@ -28,6 +29,7 @@ impl WaylandConn {
             ifaces,
             pointer_focus: HashMap::new(),
             pointer_seat: HashMap::new(),
+            touch_seat: HashMap::new(),
             xdg_to_wl: HashMap::new(),
             wl_to_top: HashMap::new(),
             top_to_xdg: HashMap::new(),
@@ -42,6 +44,7 @@ impl WaylandConn {
         self.ifaces.insert(1u32, Iface::WlDisplay);
         self.pointer_focus.clear();
         self.pointer_seat.clear();
+        self.touch_seat.clear();
         self.xdg_to_wl.clear();
         self.wl_to_top.clear();
         self.top_to_xdg.clear();
@@ -61,6 +64,9 @@ impl WaylandConn {
             Some(Iface::WlPointer) => {
                 self.pointer_focus.remove(&id);
                 self.pointer_seat.remove(&id);
+            }
+            Some(Iface::WlTouch) => {
+                self.touch_seat.remove(&id);
             }
             Some(Iface::WlSurface) => {
                 self.xdg_to_wl.retain(|_, v| *v != id);
@@ -84,6 +90,7 @@ impl WaylandConn {
             }
             Some(Iface::WlSeat) => {
                 self.pointer_seat.retain(|_, v| *v != id);
+                self.touch_seat.retain(|_, v| *v != id);
             }
             _ => {}
         }

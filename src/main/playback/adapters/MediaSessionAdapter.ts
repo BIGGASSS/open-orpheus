@@ -29,6 +29,8 @@ export type PlayerCommandEvents = {
  */
 export interface MediaSessionAdapter extends Emittery<PlayerCommandEvents> {
   onTrack(track: TrackInfo | null): void;
+  /** Album art for the current song. */
+  onArtwork(artUrl: string | null): void;
   onStatus(status: PlaybackStatus): void;
   /** Seconds. `seeked` is true when the position changed discontinuously. */
   onPosition(position: number, seeked: boolean): void;
@@ -45,6 +47,7 @@ export class NoopAdapter
   implements MediaSessionAdapter
 {
   onTrack(): void {}
+  onArtwork(): void {}
   onStatus(): void {}
   onPosition(): void {}
   onDuration(): void {}

@@ -419,13 +419,13 @@ app.on("ready", async () => {
         await (await import("./main/cookie")).default();
       }),
       packManager.getPack<WebPack>("web").readPack(),
-      import("./main/windows/desktop-lyrics").then((m) => {
+      import("./main/windows/desktop-lyrics").then(async (m) => {
         // Create desktop lyrics window
-        m.default();
+        await m.default();
       }),
-      import("./main/windows/mini-player").then((m) => {
+      import("./main/windows/mini-player").then(async (m) => {
         // Create mini player window
-        m.default();
+        await m.default();
       }),
     ]);
 
