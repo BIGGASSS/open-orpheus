@@ -188,6 +188,26 @@ pnpm install
 pnpm build:modules # 构建所有模块（会同时构建 Rust 和 Node 代码）
 ```
 
+Linux 本地构建默认使用原生工具链，不需要 Zig。可移植的 Linux 发布构建需要显式启用：
+
+```sh
+PREFER_SCRIPT=build:linux pnpm build:modules
+```
+
+此模式需要 `packaging/common/toolchain.ts` 中指定版本的 `cargo-zigbuild` 和 Zig。
+CI 和源码包构建器会安装这些工具；禁用工具安装时，请自行提供。
+没有 `build:linux` 脚本的模块（包括 WASM）仍使用普通构建。
+只有 Zig 构建会过滤不兼容的 C/C++ 编译参数，本地原生构建参数保持不变。
+
+### 运行测试
+
+```sh
+pnpm test # 同时运行 fork 的 AVA 回归测试和上游 Vitest 测试
+pnpm lint
+```
+
+有意暂缓同步的改动记录在[上游同步说明](docs/upstream-sync.md)中。
+
 ### 启动开发模式
 
 ```sh

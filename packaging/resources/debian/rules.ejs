@@ -24,6 +24,14 @@ override_dh_auto_build:
 	rustup target add wasm32-unknown-unknown
 	WASM_BINDGEN="$$(awk '/^wasm-bindgen =/ { gsub(/"/, "", $$3); print $$3; exit }' Cargo.toml)"
 	cargo install "wasm-bindgen-cli@$${WASM_BINDGEN}"
+	# Compile cargo-zigbuild against the build host's glibc, not a newer
+	# prebuilt GNU binary. Keep Zig beside its std lib and symlink onto PATH.
+	cargo install --locked "cargo-zigbuild@<%- cargoZigbuild %>"
+	BUILD_ARCH="$$(uname -m)"
+	curl --proto '=https' --tlsv1.2 -sSfL \
+	  "https://ziglang.org/download/<%- zig %>/zig-$${BUILD_ARCH}-linux-<%- zig %>.tar.xz" \
+	  | tar xJ -C "$$HOME"
+	ln -sf "$$HOME/zig-$${BUILD_ARCH}-linux-<%- zig %>/zig" "$$CARGO_HOME/bin/zig"
 	export NVM_DIR="$$HOME/.nvm"
 	curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
 	. "$$HOME/.nvm/nvm.sh"
@@ -34,7 +42,7 @@ override_dh_auto_build:
 <% } %>
 	# Install dependencies, build native modules, and package the Electron app.
 	pnpm install --frozen-lockfile
-	pnpm run build:modules
+	PREFER_SCRIPT=build:linux pnpm run build:modules
 	pnpm run package
 	# Generate the install scaffolding (desktop, icons, /usr/bin symlink).
 	node scripts/build-scaffold.ts rpm-scaffold --name <%- name %>
