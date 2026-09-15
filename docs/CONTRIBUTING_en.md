@@ -188,6 +188,28 @@ Run from the root directory:
 pnpm build:modules # Build all modules (will build both Rust and Node code)
 ```
 
+Local Linux builds use the native toolchain by default; Zig is not required.
+Portable Linux release builds opt in explicitly:
+
+```sh
+PREFER_SCRIPT=build:linux pnpm build:modules
+```
+
+This requires `cargo-zigbuild` and Zig at the versions pinned in
+`packaging/common/toolchain.ts`. CI and source-package builders install them;
+when disabling tool installation, provide them yourself. Modules without a
+`build:linux` script (including WASM) keep their normal build. Only Zig builds
+filter incompatible C/C++ flags; native build flags remain unchanged.
+
+### Run Tests
+
+```sh
+pnpm test # Both the fork's AVA regression suite and upstream Vitest tests
+pnpm lint
+```
+
+See [upstream sync notes](upstream-sync.md) for deliberately deferred changes.
+
 ### Start Development Mode
 
 ```sh
