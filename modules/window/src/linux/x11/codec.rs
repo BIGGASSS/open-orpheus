@@ -72,7 +72,7 @@ pub(crate) fn is_x11_socket(addr: *const c_void, addrlen: u32) -> bool {
         return false;
     }
 
-    let raw = unsafe { std::slice::from_raw_parts(sun.sun_path.as_ptr() as *const u8, path_len) };
+    let raw = unsafe { std::slice::from_raw_parts(sun.sun_path.as_ptr().cast::<u8>(), path_len) };
     let candidate = if raw[0] == 0 {
         &raw[1..]
     } else {
