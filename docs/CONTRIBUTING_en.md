@@ -174,6 +174,8 @@ pnpm build:modules
 pnpm start
 ```
 
+For automatic shell activation, see the [direnv setup](building.md#automatic-shell-activation-with-direnv). This replaces the `nix develop` step, not the pnpm commands.
+
 Build native modules explicitly before starting development mode, which supports renderer hot reload. pnpm and Cargo remain internal build tools. Commit the corresponding `pnpm-lock.yaml` and `Cargo.lock` updates when changing dependencies; `flake.lock` pins Nix inputs. Do not replace the lockfiles with another package manager's files.
 
 ### Checks and Packaging

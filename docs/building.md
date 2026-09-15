@@ -34,7 +34,7 @@ binaries, and private `data` directories are never build inputs.
 
 ## Development
 
-Inside `nix develop`:
+Inside `nix develop` (or the direnv-managed shell described below):
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
@@ -55,6 +55,28 @@ reinstall them inside this shell.
 Forge configuration are internal build steps, not alternative release pipelines.
 `nix develop -c pnpm exec electron-forge package` can be useful for debugging,
 but its mutable `out/` directory is not an installable Nix package.
+
+### Automatic shell activation with direnv
+
+Optionally install [direnv](https://direnv.net/) and enable its
+[shell hook](https://direnv.net/docs/hook.html) in your shell configuration. For
+example, add `eval "$(direnv hook bash)"` to `~/.bashrc`, or
+`eval "$(direnv hook zsh)"` to `~/.zshrc`, then restart your shell.
+[nix-direnv](https://github.com/nix-community/nix-direnv) is optional and can cache
+shell evaluations; plain direnv also works.
+
+Review the repository's `.envrc`, then authorize it from the repository root:
+
+```sh
+direnv allow
+```
+
+Entering the checkout now loads the same default development shell as
+`nix develop`; leaving restores your previous environment. Changes to `flake.nix`,
+`flake.lock`, `nix/default.nix`, `nix/sources.json`, or `package.json` trigger a
+reload. After editing `.envrc`, review it and run `direnv allow` again.
+The local `.direnv/` cache is ignored by Git. Dependency installation and module
+builds remain explicit: run the development commands above after activation.
 
 ## Installed application
 
