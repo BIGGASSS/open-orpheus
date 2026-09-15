@@ -27,6 +27,7 @@ overrides:
 patchedDependencies:
   '@electron-forge/plugin-vite': 9a5c817bf1b67185b62107d78b283a7aa2b2d73ea1525adac32356f067a66e28
   '@keyv/sqlite': 8b027aef2e67ecc69d826ab48dc4fe4c10bd0b5b36ac0469644ac28a9659226e
+  '@napi-rs/cli@3.9.0': 4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e
 
 importers:
 
@@ -305,7 +306,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -332,7 +333,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -359,7 +360,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -398,7 +399,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -425,7 +426,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -452,7 +453,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -479,7 +480,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
+        version: 3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.0
@@ -7047,7 +7048,7 @@ snapshots:
       - encoding
       - supports-color
 
-  '@napi-rs/cli@3.9.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)':
+  '@napi-rs/cli@3.9.0(patch_hash=4e0f03ffc445f5e1015e89cf29c3bce1a8275dfe31d2bc274b5bdd6f4ea36a1e)(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.13.3)(supports-color@8.1.1)':
     dependencies:
       '@inquirer/prompts': 8.5.2(@types/node@24.13.3)
       '@napi-rs/cross-toolchain': 1.0.3(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(supports-color@8.1.1)
