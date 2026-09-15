@@ -8,7 +8,6 @@ catalog:
   typescript: ~6.0.3
 allowBuilds:
   electron: true
-  electron-winstaller: true
   esbuild: true
   unrs-resolver: true
 patchedDependencies:

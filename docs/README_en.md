@@ -1,21 +1,23 @@
 # Open Orpheus
 
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/YUCLing/open-orpheus/release.yml)
-![GitHub License](https://img.shields.io/github/license/YUCLing/open-orpheus)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/YUCLing/open-orpheus/total)
-![GitHub Repo stars](https://img.shields.io/github/stars/YUCLing/open-orpheus)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/BIGGASSS/open-orpheus/checks.yml)
+![GitHub License](https://img.shields.io/github/license/BIGGASSS/open-orpheus)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/BIGGASSS/open-orpheus/total)
+![GitHub Repo stars](https://img.shields.io/github/stars/BIGGASSS/open-orpheus)
+
+[中文版](../README.md)
 
 An open-source implementation of Netease Cloud Music's Orpheus browser host.
 
-Track the project's current dev plans at https://github.com/users/YUCLing/projects/3
+Upstream development plans: https://github.com/users/YUCLing/projects/3
 
 ## Features
 
-- Cross-platform support
-  - Excellent native Wayland support
-  - X11
-  - macOS
-  - Windows
+- Native Nix builds for Linux (Wayland and X11) and macOS
+  - Linux: x86_64 and aarch64; macOS: aarch64 (Apple Silicon) only
+  - The pinned nixpkgs 26.11 removed Intel Mac support
+  - Native CI checks builds and tests; graphical runtime behavior needs testing on each target system
+  - No Windows or cross-compilation builds
 - Open-source
 
 What else do you expect! It just provides an environment for the original client!
@@ -59,44 +61,33 @@ What else do you expect! It just provides an environment for the original client
 
 ## Installation
 
-### Flathub
+This repository maintains **Nix-only** packaging and releases. Its old distro installers, Copr, Flathub, AppImage, and Windows release pipelines have been removed. This does not imply that upstream or third-party distribution channels have stopped operating.
 
-_Automated Publish_
-
-One-click install via Flathub
-
-[![Get it on Flathub](https://flathub.org/api/badge?locale=en)](https://flathub.org/en/apps/io.github.yucling.open-orpheus)
-
-### Fedora Linux
-
-_Automated Publish_
-
-[![Copr build status](https://copr.fedorainfracloud.org/coprs/luorain/open-orpheus/package/open-orpheus/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/luorain/open-orpheus/package/open-orpheus/)
-
-You can install via the Copr repository:
+Install Nix with `nix-command` and `flakes` enabled, then run from the repository root:
 
 ```sh
-dnf copr enable luorain/open-orpheus # Enable Copr repository
-dnf install open-orpheus # Install
+nix build .#default # Same as nix build; creates result
+nix run            # Build and launch
+nix flake check    # Application build, tests, lint, and Rust checks
 ```
 
-### Gentoo
+`packages.default` and `packages.open-orpheus` expose the same application; `apps.default` launches it. Builds target the native host: `x86_64-linux`, `aarch64-linux`, or `aarch64-darwin`, not a cross-compilation target.
 
-_Maintainer: @Puqns67_
+[Releases](https://github.com/BIGGASSS/open-orpheus/releases) contain per-system `open-orpheus-SYSTEM.nar.zst` Nix runtime closures, not standalone installers. Importing and running them still requires Nix. See the [building guide](building.md) for setup, closure import, and troubleshooting.
 
-Install via Gentoo-zh Overlay
+### Development
 
 ```sh
-eselect repository enable gentoo-zh # Enable Gentoo-zh Overlay
-emerge --sync gentoo-zh # Sync the Gentoo-zh Overlay
-emerge --ask media-sound/open-orpheus-bin # Install
+nix develop
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm build:modules
+pnpm start
+# Run checks in the same development environment
+pnpm test
+pnpm lint
 ```
 
-### Debian Linux, Flatpak, AppImage, Windows, macOS
-
-_Automated Publish_
-
-Download from [Releases](https://github.com/YUCLing/open-orpheus/releases/latest)
+pnpm and Cargo remain internal build tools in the Nix environment. Keep `pnpm-lock.yaml`, `Cargo.lock`, and `flake.lock` committed. See the [contributing guide](CONTRIBUTING_en.md).
 
 ### Resources
 
@@ -114,6 +105,11 @@ Resources are stored in the `package` subfolder of the data directory:
 The entire `package` and `resource` folders are required.
 
 If the automatic download fails, you can manually copy both folders from your official NetEase Cloud Music installation (e.g. `C:\path\to\your\installation\CloudMusic\package`) into the data directory above. **Note: `package` is a subfolder of the data directory's `package` folder, meaning the final structure should be `package/package/`!**
+
+## Documentation
+
+- [Nix building, running, and development](building.md)
+- [Wayland window rules](WM_RULES.md)
 
 ## Disclaimer
 

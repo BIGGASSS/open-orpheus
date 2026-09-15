@@ -2,20 +2,11 @@ import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { ForgeConfig } from "@electron-forge/shared-types";
-import { MakerSquirrel } from "@electron-forge/maker-squirrel";
-import { MakerZIP } from "@electron-forge/maker-zip";
-import { MakerAppImage } from "@reforged/maker-appimage";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
 
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives"; // TODO: Remove in Electron Forge 8
-
-import * as options from "./packaging/options";
-
-import MakerDeb from "./plugins/MakerDeb";
-import MakerFlatpak from "./plugins/MakerFlatpak";
-import MakerRpm from "./plugins/MakerRpm";
 
 const LOCALES = ["en", "en-US", "zh-CN"];
 
@@ -103,12 +94,8 @@ const config: ForgeConfig = {
       },
     ],
 
-    // In offline environments (e.g. flatpak sandbox), SHASUMS256.txt cannot be
-    // downloaded from GitHub. The electron zip is already verified by sha256 in
-    // generated-node-sources.json, so it's safe to skip checksum verification.
-    ...(process.env.ELECTRON_OFFLINE_BUILD
-      ? { download: { unsafelyDisableChecksums: true } }
-      : {}),
+    // Nix supplies a verified Electron archive for offline packaging.
+    electronZipDir: process.env.ELECTRON_ZIP_DIR,
 
     // Override Vite Plugin's preferences, and with our preferences
     ignore: (file: string) => {
@@ -125,16 +112,7 @@ const config: ForgeConfig = {
     },
   },
   rebuildConfig: {},
-  makers: [
-    new MakerSquirrel(options.squirrel),
-    new MakerZIP({}, ["darwin"]),
-    new MakerFlatpak(options.flatpak),
-    new MakerAppImage({
-      options: options.AppImage,
-    }),
-    new MakerDeb(options.deb),
-    new MakerRpm(options.rpm),
-  ],
+  makers: [],
   plugins: [
     new AutoUnpackNativesPlugin({}),
     new VitePlugin({
@@ -213,6 +191,11 @@ const config: ForgeConfig = {
     // Fuses are used to enable/disable various Electron functionality
     // at package time, before code signing the application
     new FusesPlugin({
+      // Nix signs the final Darwin bundle offline, after all fixups. Signing
+      // here would invalidate that signature when Packager renames the app.
+      ...(process.env.NIX_BUILD_DARWIN_SIGNING
+        ? { resetAdHocDarwinSignature: false }
+        : {}),
       version: FuseVersion.V1,
       [FuseV1Options.RunAsNode]: false,
       [FuseV1Options.EnableCookieEncryption]: true,

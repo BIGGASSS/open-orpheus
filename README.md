@@ -1,23 +1,23 @@
 # Open Orpheus
 
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/YUCLing/open-orpheus/release.yml)
-![GitHub License](https://img.shields.io/github/license/YUCLing/open-orpheus)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/YUCLing/open-orpheus/total)
-![GitHub Repo stars](https://img.shields.io/github/stars/YUCLing/open-orpheus)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/BIGGASSS/open-orpheus/checks.yml)
+![GitHub License](https://img.shields.io/github/license/BIGGASSS/open-orpheus)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/BIGGASSS/open-orpheus/total)
+![GitHub Repo stars](https://img.shields.io/github/stars/BIGGASSS/open-orpheus)
 
 [English Version](docs/README_en.md)
 
 一个对网易云音乐 Orpheus 浏览器宿主的开源实现。
 
-项目当前的开发计划请追踪：https://github.com/users/YUCLing/projects/3
+上游项目的开发计划：https://github.com/users/YUCLing/projects/3
 
 ## 功能
 
-- 跨平台支持
-  - 优秀的原生 Wayland 支持
-  - X11
-  - macOS
-  - Windows
+- Linux（Wayland、X11）和 macOS 的原生 Nix 构建
+  - Linux：x86_64 和 aarch64；macOS：仅 aarch64（Apple Silicon）
+  - 固定的 nixpkgs 26.11 已移除 Intel Mac 支持
+  - 原生 CI 检查构建与测试；图形界面的运行仍需在目标系统验证
+  - 不提供 Windows 或跨平台交叉构建
 - 开源
 
 不然你还想要啥！它本质上就是给原版客户端提供一个运行环境！
@@ -61,44 +61,33 @@
 
 ## 安装
 
-### Flathub
+本仓库仅维护 **Nix** 打包和发布。旧的发行版安装包、Copr、Flathub、AppImage 和 Windows 发布流程已从本仓库移除；这不代表上游或第三方发行渠道停止提供服务。
 
-_自动维护_
-
-通过 Flathub 一键安装
-
-[![Get it on Flathub](https://flathub.org/api/badge?locale=zh-Hans)](https://flathub.org/zh-Hans/apps/io.github.yucling.open-orpheus)
-
-### Fedora Linux
-
-_自动维护_
-
-[![Copr build status](https://copr.fedorainfracloud.org/coprs/luorain/open-orpheus/package/open-orpheus/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/luorain/open-orpheus/package/open-orpheus/)
-
-可通过 Copr 仓库进行安装
+安装启用了 `nix-command` 和 `flakes` 的 Nix 后，在仓库根目录执行：
 
 ```sh
-dnf copr enable luorain/open-orpheus # 启用 Copr 仓库
-dnf install open-orpheus # 安装
+nix build .#default # 同 nix build；生成 result
+nix run            # 构建并启动
+nix flake check    # 应用构建、测试、lint 和 Rust 检查
 ```
 
-### Gentoo
+`packages.default` 与 `packages.open-orpheus` 指向同一个应用；`apps.default` 提供启动入口。构建面向本机的 `x86_64-linux`、`aarch64-linux` 或 `aarch64-darwin`，不做交叉编译。
 
-_维护者：@Puqns67_
+[Releases](https://github.com/BIGGASSS/open-orpheus/releases) 提供按系统区分的 `open-orpheus-SYSTEM.nar.zst` Nix 运行时闭包，而非独立安装程序；导入和运行仍需要 Nix。完整设置、闭包导入与故障排查见[构建指南](docs/building.md)。
 
-可通过 Gentoo-zh Overlay 安装
+### 开发
 
 ```sh
-eselect repository enable gentoo-zh # 启用 Gentoo-zh Overlay
-emerge --sync gentoo-zh # 同步刚启用的 Gentoo-zh Overlay
-emerge --ask media-sound/open-orpheus-bin # 安装
+nix develop
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm build:modules
+pnpm start
+# 在同一开发环境中运行检查
+pnpm test
+pnpm lint
 ```
 
-### Debian Linux、Flatpak、AppImage、Windows、macOS
-
-_自动维护_
-
-前往 [Releases](https://github.com/YUCLing/open-orpheus/releases/latest) 下载
+pnpm 和 Cargo 是 Nix 环境内部的构建工具；保留并提交 `pnpm-lock.yaml`、`Cargo.lock` 和 `flake.lock`。详见[贡献指南](CONTRIBUTING.md)。
 
 ### 资源文件
 
@@ -119,6 +108,7 @@ Open Orpheus 在首次启动时如果检测到资源缺失，会自动从网易�
 
 ## 使用文档
 
+- [Nix 构建、运行和开发](docs/building.md)
 - [Wayland 窗口规则配置文档](./docs/WM_RULES.md)
 
 ## 免责声明

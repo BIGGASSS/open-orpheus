@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { readdir, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { moduleBuildEnv } from "./module-build-env.ts";
 
 async function runBuildCommand(modulePath: string, script: string) {
   return new Promise<{ status: number | null }>((resolve, reject) => {
@@ -9,7 +8,6 @@ async function runBuildCommand(modulePath: string, script: string) {
       cwd: modulePath,
       stdio: "inherit",
       shell: true,
-      env: moduleBuildEnv(script, process.env),
     });
 
     buildProcess.on("error", (err) => {

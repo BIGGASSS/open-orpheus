@@ -27,8 +27,8 @@ Open Orpheus 是一个基于 Electron 打造的网易云音乐 Orpheus 浏览器
 | 应用壳   | Electron + Node                                           |
 | 原生模块 | Rust（napi-rs），通过 Cargo workspace 管理                |
 | 渲染界面 | Svelte 5 + Tailwind CSS（`gui/`，包括设置页、右键菜单等） |
-| 构建工具 | Electron Forge + Vite                                     |
-| 包管理   | pnpm workspace                                            |
+| 构建工具 | Nix + Electron Forge + Vite                               |
+| 包管理   | pnpm workspace 和 Cargo（内部工具，使用锁文件）           |
 
 ### 目录结构
 
@@ -61,8 +61,9 @@ open-orpheus/
 │   ├── database/           # SQLite 数据库绑定（含拼音排序）
 │   ├── window/             # 跨平台窗口工具（Linux 下深度集成 Wayland/X11 协议拦截、输入区域、光标捕获）
 │   └── lifecycle/          # 退出回调等生命周期工具
-├── scripts/                # 构建脚本（模块编译、Flatpak 等）
-├── packaging/              # 各平台打包配置
+├── scripts/                # 内部构建辅助脚本（模块编译等）
+├── flake.nix               # Nix 应用、构建、检查和开发环境
+├── flake.lock              # 固定 Nix 输入版本
 ├── data/                   # 开发用运行时数据（资源、缓存、日志）
 └── patches/                # 依赖补丁
 ```
@@ -124,7 +125,8 @@ Issue 是反馈 Bug、提出功能建议或讨论项目方向的主要渠道。�
 
 请尽量提供以下信息：
 
-- **操作系统及版本**（如 Fedora 42、Windows 11）
+- **操作系统、版本和架构**（Linux：x86_64 或 aarch64；macOS：仅 aarch64）
+- **Nix 版本及所用提交**
 - **桌面环境** （如果是 Linux 操作系统）
 - **Open Orpheus 版本**
 - **复现步骤**：能稳定复现的最小步骤
@@ -146,12 +148,14 @@ Issue 是反馈 Bug、提出功能建议或讨论项目方向的主要渠道。�
 ## 提交 Pull Request
 
 1. Fork 本仓库，并基于 `main` 分支创建你的分支（如 `feat/my-feature` 或 `fix/some-bug`）。
-2. 完成修改后，确保代码可以正常构建和运行。
+2. 完成修改后，运行 `nix flake check`、`nix build`，并在可用的桌面会话中运行 `nix run`。注明实际验证的平台。
 3. 提交 PR 时请简要描述改动内容及动机。
 4. 如果你的 PR 关联了某个 issue，请在描述中用 `Closes #issue号` 关联。
 5. 等待 review。维护者可能会提出修改建议，请保持耐心。
 
 ### 代码风格
+
+在 `nix develop` 环境内运行以下工具：
 
 - TypeScript / JavaScript：项目使用 ESLint，提交前请确保没有 lint 错误（`pnpm lint`），并且确保代码已格式化（`pnpm format`）。
 - Rust：遵循标准 `rustfmt` 风格（`cargo fmt`）。
@@ -159,59 +163,38 @@ Issue 是反馈 Bug、提出功能建议或讨论项目方向的主要渠道。�
 
 ## 开发环境搭建
 
-如果你要参与开发，需要先准备好 Node 和 Rust（推荐 Node v24、Rust 1.96）。另外，请确保已添加 WebAssembly 编译目标并安装 `wasm-bindgen-cli`：
+先安装启用了 `nix-command` 和 `flakes` 的 Nix，完整说明见[构建指南](docs/building.md)。Nix 提供 Node、pnpm、Rust、WASM 工具链和系统依赖，无需另行使用 rustup、Cargo 或发行版包管理器安装构建工具。
+
+在仓库根目录执行：
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
-```
-
-根项目这边的工作流和普通的 Electron Forge 项目差不多，不过 Open Orpheus 自己有一些原生模块，所以还得多做几步配置。
-
-下面的步骤默认使用 `pnpm` 作为 Node 的包管理器，我们不建议使用其他包管理器。
-
-### 安装依赖
-
-在根目录执行一次即可，pnpm workspace 会自动为所有包（包括原生模块）安装依赖：
-
-```sh
-pnpm install
-```
-
-### 构建模块
-
-`modules` 文件夹里有几个 Open Orpheus 运行所需的原生模块。
-
-在根目录执行：
-
-```sh
-pnpm build:modules # 构建所有模块（会同时构建 Rust 和 Node 代码）
-```
-
-Linux 本地构建默认使用原生工具链，不需要 Zig。可移植的 Linux 发布构建需要显式启用：
-
-```sh
-PREFER_SCRIPT=build:linux pnpm build:modules
-```
-
-此模式需要 `packaging/common/toolchain.ts` 中指定版本的 `cargo-zigbuild` 和 Zig。
-CI 和源码包构建器会安装这些工具；禁用工具安装时，请自行提供。
-没有 `build:linux` 脚本的模块（包括 WASM）仍使用普通构建。
-只有 Zig 构建会过滤不兼容的 C/C++ 编译参数，本地原生构建参数保持不变。
-
-### 运行测试
-
-```sh
-pnpm test # 同时运行 fork 的 AVA 回归测试和上游 Vitest 测试
-pnpm lint
-```
-
-有意暂缓同步的改动记录在[上游同步说明](docs/upstream-sync.md)中。
-
-### 启动开发模式
-
-```sh
+nix develop # devShells.default
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm build:modules
 pnpm start
 ```
 
-这会以开发模式启动 Electron 应用，支持热重载（renderer 部分）。
+先显式构建原生模块，再启动支持 renderer 热重载的开发模式。pnpm 和 Cargo 仍是内部构建工具；依赖更新应同时更新对应的 `pnpm-lock.yaml`、`Cargo.lock`，Nix 输入由 `flake.lock` 固定。不要使用其他包管理器替换锁文件。
+
+### 检查和打包
+
+开发环境内的快速反馈：
+
+```sh
+pnpm test # AVA 回归测试和 Vitest 测试
+pnpm lint
+```
+
+提交前运行与 CI 相同的 Nix 入口：
+
+```sh
+nix flake check
+nix build .#default # packages.default，与 packages.open-orpheus 相同
+nix run            # apps.default；需要桌面会话
+```
+
+`nix flake check` 包括应用构建、测试、lint 和 Rust 检查。每个 push 和 PR 都会在三种原生 runner 上执行检查、显式构建默认包并导出运行时闭包，不使用文件变更过滤。
+
+目标系统为 `x86_64-linux`、`aarch64-linux` 和 `aarch64-darwin`。固定的 nixpkgs 26.11 已移除 Intel Mac 支持。原生 CI 检查构建与测试；图形界面的运行仍需在目标系统验证。不提供 Windows 或交叉编译，也不再维护本仓库原有的发行版安装包和外部渠道发布脚本；这不代表外部渠道停止运行。
+
+有意暂缓同步的改动见[上游同步说明](docs/upstream-sync.md)，发布步骤见[发布检查事项](docs/RELEASE_CHECKLIST.md)。

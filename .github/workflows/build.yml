@@ -1,137 +1,87 @@
-name: Build Bundles
+name: Nix Build
 
 on:
   workflow_call:
     inputs:
       runner:
-        description: GitHub Actions runner label
+        description: Native GitHub Actions runner label
+        required: true
+        type: string
+      system:
+        description: Native Nix system (for example x86_64-linux)
         required: true
         type: string
       ref:
-        description: Git ref to checkout (defaults to caller's ref)
+        description: Immutable commit to build (defaults to the caller's SHA)
         required: false
         type: string
         default: ""
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: Build on ${{ inputs.runner }}
+    name: Check and build ${{ inputs.system }}
     runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SYSTEM: ${{ inputs.system }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout build commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
         with:
-          node-version: 24
-          cache: pnpm
+          extra_nix_config: |
+            sandbox = true
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v6
         with:
-          toolchain: ${{ vars.RUST_VERSION || 'stable' }}
-          target: wasm32-unknown-unknown
+          primary-key: nix-${{ inputs.system }}-${{ hashFiles('flake.lock', 'pnpm-lock.yaml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-prefixes-first-match: nix-${{ inputs.system }}-${{ hashFiles('flake.lock', 'pnpm-lock.yaml', 'Cargo.lock') }}-
 
-      - name: Install dependencies
-        shell: bash
+      - name: Verify native system
         run: |
-          pnpm install --frozen-lockfile
-          version=$(awk '/^wasm-bindgen =/ { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
-          cargo install "wasm-bindgen-cli@$version"
+          actual_system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          if [[ "$actual_system" != "$SYSTEM" ]]; then
+            echo "Expected $SYSTEM, but the runner is $actual_system" >&2
+            exit 1
+          fi
 
-      - name: Install cross-compilation toolchain
-        # napi-rs `build -x` runs `cargo zigbuild` for every non-Windows target
-        # (even when the target matches the host). cargo-zigbuild resolves zig
-        # itself, preferring the PyPI `ziglang` package (`python -m ziglang`) and
-        # falling back to a `zig` on PATH.
-        if: runner.os == 'Linux'
-        shell: bash
+      - name: Run all flake checks
+        run: nix flake check --print-build-logs
+
+      - name: Build default package
+        run: nix build .#default --print-build-logs
+
+      - name: Verify macOS bundle signature
+        if: runner.os == 'macOS'
+        run: /usr/bin/codesign --verify --deep --strict result/Applications/open-orpheus.app
+
+      - name: Export complete runtime closure
+        # Run the exporter in the dev shell for portable coreutils and zstd.
         run: |
-          cargo_zigbuild_version=$(sed -n 's/.*CARGO_ZIGBUILD_VERSION = "\([^"]*\)".*/\1/p' packaging/common/toolchain.ts)
-          zig_version=$(sed -n 's/.*ZIG_VERSION = "\([^"]*\)".*/\1/p' packaging/common/toolchain.ts)
-          cargo install --locked "cargo-zigbuild@$cargo_zigbuild_version"
-          # --break-system-packages: the Ubuntu images are PEP 668 managed.
-          pip install --break-system-packages "ziglang==$zig_version"
+          # SYSTEM is expanded by the inner shell, not the runner shell.
+          # shellcheck disable=SC2016
+          nix develop -c bash -euo pipefail -c '
+            nix-store --export $(nix-store -qR "$(readlink -f result)") |
+              zstd -T0 > "open-orpheus-${SYSTEM}.nar.zst"
+          '
+          test -s "open-orpheus-${SYSTEM}.nar.zst"
 
-      - name: Build native modules
-        run: pnpm build:modules
-        env:
-          # Portable Linux release builds are opt-in; local builds stay native.
-          PREFER_SCRIPT: ${{ runner.os == 'Linux' && 'build:linux' || 'build' }}
-
-      - name: Install packaging dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y flatpak flatpak-builder appstream elfutils debhelper-compat
-
-      - name: Set up Flatpak runtimes
-        if: runner.os == 'Linux'
-        run: |
-          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 org.electronjs.Electron2.BaseApp//25.08
-
-      - name: Validate metainfo
-        if: runner.os == 'Linux'
-        run: appstreamcli validate packaging/flatpak/metainfo.xml
-
-      - name: Build application bundles
-        run: pnpm make
-        env:
-          EXTRACT_LICENSES_TO: out/license
-
-      - name: Upload licenses
+      - name: Upload runtime closure
         uses: actions/upload-artifact@v7
         with:
-          name: licenses-${{ inputs.runner }}
-          path: out/license/**
-          if-no-files-found: ignore
-
-      - name: Upload flatpak
-        uses: actions/upload-artifact@v7
-        with:
-          name: flatpak-${{ inputs.runner }}
-          path: out/make/flatpak/**
-          if-no-files-found: ignore
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v7
-        with:
-          name: deb-${{ inputs.runner }}
-          path: out/make/deb/**
-          if-no-files-found: ignore
-
-      - name: Upload rpm
-        uses: actions/upload-artifact@v7
-        with:
-          name: rpm-${{ inputs.runner }}
-          path: out/make/rpm/**
-          if-no-files-found: ignore
-
-      - name: Upload AppImage
-        uses: actions/upload-artifact@v7
-        with:
-          name: AppImage-${{ inputs.runner }}
-          path: out/make/AppImage/**
-          if-no-files-found: ignore
-
-      - name: Upload squirrel
-        uses: actions/upload-artifact@v7
-        with:
-          name: squirrel-${{ inputs.runner }}
-          path: out/make/squirrel.windows/**
-          if-no-files-found: ignore
-
-      - name: Upload zip
-        uses: actions/upload-artifact@v7
-        with:
-          name: zip-${{ inputs.runner }}
-          path: out/make/zip/**
-          if-no-files-found: ignore
+          name: open-orpheus-${{ inputs.system }}
+          path: open-orpheus-${{ inputs.system }}.nar.zst
+          if-no-files-found: error
+          compression-level: 0
