@@ -88,11 +88,13 @@ typings/
 # Vite
 .vite/
 
-# Electron-Forge
-out/
+# Nix build outputs and direnv
+/result
+/result-*
+/.direnv/
 
-# makepkg
-aur/
+# Electron-Forge (internal development output)
+out/
 
 # Rust
 target

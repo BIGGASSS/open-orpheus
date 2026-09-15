@@ -34,6 +34,8 @@ function svelteKitPlugin(): Plugin {
     async configureServer() {
       const proc = fork(WRAPPER, ["dev"], {
         env: {
+          // Preserve the Nix toolchain and native-library environment.
+          ...process.env,
           DEV_PORT: String(SVELTEKIT_DEV_PORT),
         },
       });

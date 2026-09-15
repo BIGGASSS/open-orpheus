@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Open Orpheus
+Comment=An open-source Netease Cloud Music client
+Exec=open-orpheus %U
+Icon=open-orpheus
+Terminal=false
+Categories=Audio;AudioVideo;Music;Network;
+MimeType=x-scheme-handler/orpheus;
+StartupWMClass=open-orpheus

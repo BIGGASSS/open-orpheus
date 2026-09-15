@@ -1,6 +1,6 @@
 # Contributing to Open Orpheus
 
-[中文版](./CONTRIBUTING.md)
+[中文版](../CONTRIBUTING.md)
 
 First off, thank you for taking the time to contribute to Open Orpheus! Whether it's filing a bug report, improving documentation, or submitting code, every contribution matters.
 
@@ -27,8 +27,8 @@ Open Orpheus is an Electron-based host for Netease Cloud Music's Orpheus browser
 | App Shell       | Electron + Node                                                           |
 | Native Modules  | Rust (napi-rs), managed via Cargo workspace                               |
 | Renderer UI     | Svelte 5 + Tailwind CSS (`gui/`, including settings, context menus, etc.) |
-| Build Tools     | Electron Forge + Vite                                                     |
-| Package Manager | pnpm workspace                                                            |
+| Build Tools     | Nix + Electron Forge + Vite                                               |
+| Package Manager | pnpm workspace and Cargo (internal tools with lockfiles)                  |
 
 ### Directory Structure
 
@@ -61,8 +61,9 @@ open-orpheus/
 │   ├── database/           # SQLite database bindings (with pinyin collation)
 │   ├── window/             # Cross-platform window utilities (deep Linux integration: Wayland/X11 protocol interception, input regions, cursor capture)
 │   └── lifecycle/          # Exit callbacks and lifecycle utilities
-├── scripts/                # Build scripts (module compilation, Flatpak, etc.)
-├── packaging/              # Per-platform packaging configuration
+├── scripts/                # Internal build helpers (module compilation, etc.)
+├── flake.nix               # Nix application, builds, checks, and development shell
+├── flake.lock              # Pinned Nix inputs
 ├── data/                   # Development runtime data (resources, cache, logs)
 └── patches/                # Dependency patches
 ```
@@ -124,7 +125,8 @@ Issues are the main channel for reporting bugs, suggesting features, and discuss
 
 Please include as much of the following as possible:
 
-- **OS and version** (e.g. Fedora 42, Windows 11)
+- **OS, version, and architecture** (Linux: x86_64 or aarch64; macOS: aarch64 only)
+- **Nix version and source commit**
 - **Desktop environment** (if on Linux)
 - **Open Orpheus version**
 - **Steps to reproduce** — the minimal steps that reliably trigger the issue
@@ -146,74 +148,55 @@ Note that the core goal of this project is **interoperability**. Features intend
 ## Submitting Pull Requests
 
 1. Fork the repository and create your branch from `main` (e.g. `feat/my-feature` or `fix/some-bug`).
-2. Make your changes and verify the project builds and runs correctly.
+2. Run `nix flake check`, `nix build`, and, in an available desktop session, `nix run`. State which platforms you actually validated.
 3. Write a clear PR description explaining what you changed and why.
 4. If your PR addresses an issue, reference it with `Closes #issue-number` in the description.
 5. Submit and wait for review. Maintainers may request changes — please be patient.
 
 ### Code Style
 
-- TypeScript / JavaScript: The project uses ESLint. Make sure there are no lint errors before submitting (`pnpm lint`).
+Run these tools inside `nix develop`:
+
+- TypeScript / JavaScript: The project uses ESLint. Make sure there are no lint errors before submitting (`pnpm lint`) and format changes with `pnpm format`.
 - Rust: Follow standard `rustfmt` style (`cargo fmt`).
 - Commit messages should be in English. The [Conventional Commits](https://www.conventionalcommits.org/) format is recommended.
 
 ## Development Setup
 
-You will need Node and Rust to work with this project (Node v24 and Rust 1.96 are recommended). Also, make sure to add the WebAssembly compilation target and install `wasm-bindgen-cli`:
+Install Nix with `nix-command` and `flakes` enabled; see the [building guide](building.md) for details. Nix supplies Node, pnpm, Rust, the WASM toolchain, and system dependencies. Do not separately install build tools using rustup, Cargo, or distro package managers.
+
+From the repository root:
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
-```
-
-For the root project, everything works just like any other Electron Forge project, but Open Orpheus has some native modules of its own, which require a few extra setup steps.
-
-In the following steps, `pnpm` will be used as Node's package manager. Other package managers are not recommended.
-
-### Install Dependencies
-
-Run this once at the root — pnpm workspaces will install dependencies for all packages including native modules:
-
-```sh
-pnpm install
-```
-
-### Build Modules
-
-Inside `modules` folder, there are a few native modules that Open Orpheus requires to run.
-
-Run from the root directory:
-
-```sh
-pnpm build:modules # Build all modules (will build both Rust and Node code)
-```
-
-Local Linux builds use the native toolchain by default; Zig is not required.
-Portable Linux release builds opt in explicitly:
-
-```sh
-PREFER_SCRIPT=build:linux pnpm build:modules
-```
-
-This requires `cargo-zigbuild` and Zig at the versions pinned in
-`packaging/common/toolchain.ts`. CI and source-package builders install them;
-when disabling tool installation, provide them yourself. Modules without a
-`build:linux` script (including WASM) keep their normal build. Only Zig builds
-filter incompatible C/C++ flags; native build flags remain unchanged.
-
-### Run Tests
-
-```sh
-pnpm test # Both the fork's AVA regression suite and upstream Vitest tests
-pnpm lint
-```
-
-See [upstream sync notes](upstream-sync.md) for deliberately deferred changes.
-
-### Start Development Mode
-
-```sh
+nix develop # devShells.default
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm build:modules
 pnpm start
 ```
 
-This launches the Electron app in development mode with hot reload for the renderer.
+For automatic shell activation, see the [direnv setup](building.md#automatic-shell-activation-with-direnv). This replaces the `nix develop` step, not the pnpm commands.
+
+Build native modules explicitly before starting development mode, which supports renderer hot reload. pnpm and Cargo remain internal build tools. Commit the corresponding `pnpm-lock.yaml` and `Cargo.lock` updates when changing dependencies; `flake.lock` pins Nix inputs. Do not replace the lockfiles with another package manager's files.
+
+### Checks and Packaging
+
+For quick feedback inside the development shell:
+
+```sh
+pnpm test # AVA regression tests and Vitest tests
+pnpm lint
+```
+
+Before submitting, use the same Nix entry points as CI:
+
+```sh
+nix flake check
+nix build .#default # packages.default, also exposed as packages.open-orpheus
+nix run            # apps.default; requires a desktop session
+```
+
+`nix flake check` covers the application build, tests, lint, and Rust checks. Every push and PR runs checks, explicitly builds the default package, and exports runtime closures on all three native runners, without changed-file filters.
+
+Targets are `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. Intel Macs are unsupported because the pinned nixpkgs 26.11 removed support. Native CI checks builds and tests; graphical runtime behavior needs testing on each target system. Windows and cross-compilation are not provided. This repository no longer maintains its old distro installers or external-channel publishing scripts; external channels may still operate independently.
+
+See [upstream sync notes](upstream-sync.md) for deliberately deferred changes and the [release checklist](RELEASE_CHECKLIST.md) for publishing.

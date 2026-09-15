@@ -1,0 +1,123 @@
+diff --git a/dist/cli.js b/dist/cli.js
+index c068261bdd3ddf628b8f51b76048a8cb66cacd37..02eb96474fab8fc756d66f9f0480a7e9bd1cf25f 100755
+--- a/dist/cli.js
++++ b/dist/cli.js
+@@ -1651,18 +1651,24 @@ async function readPosixProcessIncarnation(pid) {
+ }
+ function executeProcessIncarnationCommand(command, args, env = process.env) {
+ 	return new Promise((resolveCommand) => {
+-		execFile(command, args, {
+-			encoding: "utf8",
+-			env,
+-			timeout: processIncarnationCommandTimeout,
+-			windowsHide: true
+-		}, (error, stdout) => {
+-			if (error) {
+-				resolveCommand(null);
+-				return;
+-			}
+-			resolveCommand(stdout.trim() || null);
+-		});
++		// macOS may synchronously deny these process identity probes with EPERM (e.g. under sandboxing);
++		// treat a synchronous execFile throw like an async spawn error and resolve null.
++		try {
++			execFile(command, args, {
++				encoding: "utf8",
++				env,
++				timeout: processIncarnationCommandTimeout,
++				windowsHide: true
++			}, (error, stdout) => {
++				if (error) {
++					resolveCommand(null);
++					return;
++				}
++				resolveCommand(stdout.trim() || null);
++			});
++		} catch {
++			resolveCommand(null);
++		}
+ 	});
+ }
+ function assertReconciliationLockAcquisitionTimeRemaining(acquisitionDeadline, key) {
+diff --git a/dist/index.cjs b/dist/index.cjs
+index a8c7c70c8970a9d283ade6b39fe65f1257495dfd..a9110dd3f1632e004a3b986494aee78888a825b6 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -1676,18 +1676,24 @@ async function readPosixProcessIncarnation(pid) {
+ }
+ function executeProcessIncarnationCommand(command, args, env = process.env) {
+ 	return new Promise((resolveCommand) => {
+-		(0, node_child_process.execFile)(command, args, {
+-			encoding: "utf8",
+-			env,
+-			timeout: processIncarnationCommandTimeout,
+-			windowsHide: true
+-		}, (error, stdout) => {
+-			if (error) {
+-				resolveCommand(null);
+-				return;
+-			}
+-			resolveCommand(stdout.trim() || null);
+-		});
++		// macOS may synchronously deny these process identity probes with EPERM (e.g. under sandboxing);
++		// treat a synchronous execFile throw like an async spawn error and resolve null.
++		try {
++			(0, node_child_process.execFile)(command, args, {
++				encoding: "utf8",
++				env,
++				timeout: processIncarnationCommandTimeout,
++				windowsHide: true
++			}, (error, stdout) => {
++				if (error) {
++					resolveCommand(null);
++					return;
++				}
++				resolveCommand(stdout.trim() || null);
++			});
++		} catch {
++			resolveCommand(null);
++		}
+ 	});
+ }
+ function assertReconciliationLockAcquisitionTimeRemaining(acquisitionDeadline, key) {
+diff --git a/dist/index.js b/dist/index.js
+index 62a4f805bc15b62abaa960bcbaccc65c0490eec0..cbaa0ee0a6fb9d0e9ee39768ba48fb5a7885195e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1650,18 +1650,24 @@ async function readPosixProcessIncarnation(pid) {
+ }
+ function executeProcessIncarnationCommand(command, args, env = process.env) {
+ 	return new Promise((resolveCommand) => {
+-		execFile(command, args, {
+-			encoding: "utf8",
+-			env,
+-			timeout: processIncarnationCommandTimeout,
+-			windowsHide: true
+-		}, (error, stdout) => {
+-			if (error) {
+-				resolveCommand(null);
+-				return;
+-			}
+-			resolveCommand(stdout.trim() || null);
+-		});
++		// macOS may synchronously deny these process identity probes with EPERM (e.g. under sandboxing);
++		// treat a synchronous execFile throw like an async spawn error and resolve null.
++		try {
++			execFile(command, args, {
++				encoding: "utf8",
++				env,
++				timeout: processIncarnationCommandTimeout,
++				windowsHide: true
++			}, (error, stdout) => {
++				if (error) {
++					resolveCommand(null);
++					return;
++				}
++				resolveCommand(stdout.trim() || null);
++			});
++		} catch {
++			resolveCommand(null);
++		}
+ 	});
+ }
+ function assertReconciliationLockAcquisitionTimeRemaining(acquisitionDeadline, key) {

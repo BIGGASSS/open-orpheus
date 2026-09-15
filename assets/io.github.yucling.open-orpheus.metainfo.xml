@@ -36,7 +36,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">io.github.yucling.open-orpheus.desktop</launchable>
+  <launchable type="desktop-id">open-orpheus.desktop</launchable>
 
   <branding>
     <color type="primary" scheme_preference="light">#5A9EF5</color>

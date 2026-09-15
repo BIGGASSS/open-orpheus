@@ -1,32 +1,28 @@
 # Selective upstream sync
 
+## Current packaging policy: Nix only
+
+This fork now uses `nix build`, `nix run`, `nix flake check`, and `nix develop` as its public build interface. See [building.md](building.md). pnpm and Cargo remain internal tools, with `pnpm-lock.yaml` and `Cargo.lock` retained alongside `flake.lock`.
+
+- Build natively for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`; no Windows or cross-compilation pipeline. Intel Macs are unsupported because the pinned nixpkgs 26.11 removed support. Native CI checks builds and tests; graphical runtime behavior needs testing on each target system.
+- Run unconditional checks and default-package builds on every PR/push using the three native GitHub runners. Export complete Nix runtime closures for each system.
+- Release only from `v*` tag pushes, after checking the tag against `package.json`, using the immutable triggering commit and GitHub-generated release notes.
+- The old distro packaging, Copr/Flathub automation, AppImage/Windows releases, change filters, and Zig release-toolchain adaptations are superseded. Do not reintroduce them in future syncs. This is a policy for this repository, not a claim that upstream or third-party channels have shut down.
+
 ## 2026-09-15 — reviewed through `0666c4b`
 
 Source: `YUCLing/open-orpheus`, changes since `b4508e9`.
-This is a selective import, not a complete adoption of upstream v0.17.1.
+This was a selective import, not a complete adoption of upstream v0.17.1.
 
 ### Included
 
-- Unit tests and CI from `9da8939`, including checkout-independent packaging
-  fixtures, Flatpak build/lint checks, and quiet malformed skin-template parsing.
-- Linux packaging/toolchain improvements from `2e05196` and the intent of the
-  Copr fix in `0666c4b`, with the adaptations below.
+- Unit tests from `9da8939`, including checkout-independent fixtures and quiet malformed skin-template parsing.
+- Linux packaging/toolchain changes from `2e05196` and the intent of the Copr fix in `0666c4b` were imported at the time. Their packaging implementation and CI adaptations have since been replaced by the Nix policy above.
 
-### Fork adaptations
+### Retained fork adaptations
 
-- Keep `pnpm test` running both AVA and Vitest. CI filters include `test/**`,
-  and Flatpak filters also cover build scripts, modules and dependency patches.
-- Preserve the fork's explicit symlink assertions rather than restoring the
-  obsolete util snapshot.
-- Keep local `pnpm build:modules` native. Release CI and source packagers opt
-  into Zig explicitly with `PREFER_SCRIPT=build:linux`; modules without that
-  script fall back to their ordinary build.
-- Sanitize incompatible C/C++ flags at the Zig subprocess boundary, not only
-  in RPM packaging. Preserve frame-pointer flags and native build environments.
-- Compile cargo-zigbuild on deb/RPM build hosts instead of downloading a GNU
-  executable that itself requires a newer glibc. Flatpak keeps checksummed
-  offline toolchains inside its known runtime.
-- Keep offline-cache, cloud-drive, tray and shutdown fixes unchanged.
+- Keep `pnpm test` running both AVA and Vitest under Nix.
+- Keep offline-cache, cloud-drive, tray, and shutdown fixes unchanged.
 
 ### Deferred
 
@@ -46,5 +42,5 @@ existing absolute Play/Pause behavior. Revisit upstream router tests together
 with the eventual playback fix.
 
 The v0.17.1 version/release notes from `01a9052` and unrelated generated
-`modules/audio-effect/dist` declaration changes are not imported. The fork
-continues to identify as v0.17.0 rather than claim the deferred playback fix.
+`modules/audio-effect/dist` declaration changes were not imported. The selective
+sync retained v0.17.0 rather than claim the deferred playback fix.

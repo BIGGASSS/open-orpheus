@@ -1,0 +1,21 @@
+{
+  "pnpm": {
+    "version": "11.24.0",
+    "hash": "sha256-0eqyQzFyZhzDahjshfzpP3cdsZYnFzKcwB7JwoJMok8="
+  },
+  "electron": {
+    "version": "43.2.0",
+    "hashes": {
+      "x86_64-linux": "f77ca6ed67bbc68702b69b56ad499bca6ae090705ade7d04f0ac545e409dec68",
+      "aarch64-linux": "50e1cdefbf8590e0d89b0276314a99c7b98e8eed732204c6f1a1c2a38376ed87",
+      "aarch64-darwin": "ad4a0ae3c37ee05aa06c7e2ed0627608389790f0505a2b0d20319efbe33ffe28"
+    }
+  },
+  "wasm-bindgen": {
+    "version": "0.2.128",
+    "hash": "sha256-a7lcXJnnZkYReja+iUO7NqqrWyv3toxnUgQb8s4IS5s=",
+    "cargoHash": "sha256-R1Tas33Ursy8kqsxguAkG0ZhNed2n5uFTAhw1l2qlLY="
+  },
+  "avs3aHash": "sha256-OcI39YMDhcBpP6Tij11rATcKtp+mVrXHsjy8gRSm3eI=",
+  "pnpmDepsHash": "sha256-7Sk03ieZgEUApIIoRo/NMyXbTeV/YZorEaUjci8fRz8="
+}
