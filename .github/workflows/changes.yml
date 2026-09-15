@@ -9,9 +9,6 @@ on:
       rust:
         description: Rust files or Cargo metadata changed
         value: ${{ jobs.changes.outputs.rust }}
-      build:
-        description: Application bundle inputs changed
-        value: ${{ jobs.changes.outputs.build }}
       flathub:
         description: Flatpak manifest inputs (packaging, toolchains, lockfiles) changed
         value: ${{ jobs.changes.outputs.flathub }}
@@ -27,7 +24,6 @@ jobs:
     outputs:
       node: ${{ steps.filter.outputs.node }}
       rust: ${{ steps.filter.outputs.rust }}
-      build: ${{ steps.filter.outputs.build }}
       flathub: ${{ steps.filter.outputs.flathub }}
 
     steps:
@@ -79,36 +75,11 @@ jobs:
               - "Cargo.lock"
               - "modules/**/Cargo.toml"
               - "modules/**/*.rs"
-            build:
-              - ".github/workflows/changes.yml"
-              - ".github/workflows/ci.yml"
-              - ".github/workflows/build.yml"
-              - "package.json"
-              - "pnpm-lock.yaml"
-              - "pnpm-workspace.yaml"
-              - "Cargo.toml"
-              - "Cargo.lock"
-              - "forge.config.ts"
-              - "forge.env.d.ts"
-              - "vite*.config.ts"
-              - "tsconfig.json"
-              - "src/**"
-              - "gui/**"
-              - "types/**"
-              - "modules/**"
-              - "scripts/**"
-              - "packaging/**"
-              - "patches/**"
-              - "assets/**"
-              - "LICENSE"
-              - "versions.json"
-            # Only the inputs that shape the generated manifest: a full source
-            # build is expensive, so app source changes don't trigger it.
+            # Only the inputs that shape the generated manifest.
             flathub:
               - ".github/workflows/changes.yml"
               - ".github/workflows/test.yml"
               - ".github/workflows/flathub.yml"
-              - ".github/flatpak-lint-exceptions.json"
               - "package.json"
               - "pnpm-lock.yaml"
               - "pnpm-workspace.yaml"

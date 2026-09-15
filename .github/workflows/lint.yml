@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build native modules
+      - name: Generate module types
         shell: bash
         run: SKIP_IF_NO_SCRIPT=1 PREFER_SCRIPT=types pnpm build:modules
 
