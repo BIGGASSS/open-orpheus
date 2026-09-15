@@ -96,9 +96,6 @@ typings/
 # Electron-Forge (internal development output)
 out/
 
-# makepkg
-aur/
-
 # Rust
 target
 
