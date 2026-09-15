@@ -308,7 +308,8 @@ let
           ''
             mkdir -p $out/lib/open-orpheus $out/bin
             cp -R out/open-orpheus-linux-${arch}/. $out/lib/open-orpheus/
-            install -Dm644 ${./open-orpheus.desktop} $out/share/applications/io.github.yucling.open-orpheus.desktop
+            # Keep Electron's default desktopName and the MPRIS desktop ID aligned.
+            install -Dm644 ${./open-orpheus.desktop} $out/share/applications/open-orpheus.desktop
             install -Dm644 assets/io.github.yucling.open-orpheus.metainfo.xml $out/share/metainfo/io.github.yucling.open-orpheus.metainfo.xml
             for size in 256 512 1024; do
               install -Dm644 assets/icon_$size.png $out/share/icons/hicolor/''${size}x$size/apps/open-orpheus.png

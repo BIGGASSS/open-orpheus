@@ -21,6 +21,28 @@ const has = (pattern) =>
 const manifest = JSON.parse(extractFile(archive, "package.json").toString());
 assert.equal(manifest.name, "open-orpheus");
 assert.equal(manifest.main, ".vite/build/main.js");
+if (platform === "linux") {
+  // Electron defaults to <name>.desktop; MPRIS advertises "open-orpheus".
+  const desktopName = manifest.desktopName ?? `${manifest.name}.desktop`;
+  assert.equal(desktopName, "open-orpheus.desktop");
+  const desktop = readFileSync(
+    join(out, "share/applications", desktopName),
+    "utf8"
+  );
+  assert.match(desktop, /^Exec=open-orpheus %U$/m);
+  assert.match(desktop, /^Icon=open-orpheus$/m);
+  assert.match(desktop, /^MimeType=x-scheme-handler\/orpheus;$/m);
+  const metainfo = readFileSync(
+    join(out, "share/metainfo/io.github.yucling.open-orpheus.metainfo.xml"),
+    "utf8"
+  );
+  assert(
+    metainfo.includes(
+      `<launchable type="desktop-id">${desktopName}</launchable>`
+    ),
+    "AppStream launchable must match the installed desktop file"
+  );
+}
 for (const entry of [
   "main",
   "preload",
