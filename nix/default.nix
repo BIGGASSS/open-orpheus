@@ -11,7 +11,7 @@ let
     inherit (sources.pnpm) version hash;
     nodejs-slim = nodejs;
   };
-  rust = pkgs.rust-bin.stable."1.98.0".default.override {
+  rust = pkgs.rust-bin.stable."1.98.1".default.override {
     extensions = [
       "clippy"
       "rustfmt"
