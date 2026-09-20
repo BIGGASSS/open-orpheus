@@ -174,8 +174,6 @@ pnpm build:modules
 pnpm start
 ```
 
-如需自动加载开发环境，请参阅 [direnv 设置](docs/building.md#automatic-shell-activation-with-direnv)。它仅替代 `nix develop` 步骤，pnpm 命令仍需手动运行。
-
 先显式构建原生模块，再启动支持 renderer 热重载的开发模式。pnpm 和 Cargo 仍是内部构建工具；依赖更新应同时更新对应的 `pnpm-lock.yaml`、`Cargo.lock`，Nix 输入由 `flake.lock` 固定。不要使用其他包管理器替换锁文件。
 
 ### 检查和打包

@@ -88,10 +88,9 @@ typings/
 # Vite
 .vite/
 
-# Nix build outputs and direnv
+# Nix build outputs
 /result
 /result-*
-/.direnv/
 
 # Electron-Forge (internal development output)
 out/
