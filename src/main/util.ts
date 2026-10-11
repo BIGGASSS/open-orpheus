@@ -1,5 +1,5 @@
 import { resolve, join, normalize, sep } from "node:path";
-import { access, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 
 import { BrowserWindow, screen } from "electron";
@@ -56,6 +56,25 @@ export async function fileExists(path: string) {
       if (isFileNotFound(err)) return false;
       throw err;
     });
+}
+
+/**
+ * Whether `path` exists and can actually be written to, tested by creating
+ * (then removing) a uniquely named probe directory. When `create` is true the
+ * directory is created first if it does not exist.
+ *
+ * @param path Path to the directory to test
+ * @param create Whether to create the directory if it does not exist
+ */
+export async function isWritableDir(path: string, create = false): Promise<boolean> {
+  try {
+    if (create) await mkdir(path, { recursive: true });
+    const probe = await mkdtemp(join(path, "open_orpheus_test_writable_"));
+    await rm(probe, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function calculateDbSize(db: string): Promise<number> {

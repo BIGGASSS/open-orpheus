@@ -8,12 +8,11 @@ import {
   rename,
   rm,
   stat,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 
-import { app } from "electron";
+import { app, dialog, Notification } from "electron";
 import mime from "mime";
 import { MetaPicture, MusicFile } from "music-tag-native";
 
@@ -30,6 +29,7 @@ import {
   fileExists,
   isFileNotFound,
   isMusicFile,
+  isWritableDir,
   normalizePath,
   sanitizeRelativePath,
 } from "../util";
@@ -84,30 +84,39 @@ async function readDownloadedMusicInfo(
   };
 }
 
+/**
+ * Default download directory, honouring Flatpak's sandbox where only the
+ * app-specific directory is writable.
+ */
+function getDefaultDownloadDir(): string {
+  if (process.env.FLATPAK_ID) {
+    // We store to only writable path in Flatpak
+    return resolve(app.getPath("home"), ".var", "app", process.env.FLATPAK_ID, "downloads");
+  }
+  return resolve(app.getPath("downloads"), "CloudMusic");
+}
+
 let downloadDirWatcher: FSWatcher | null = null;
 registerCallHandler<[string, string, string], [string, string]>(
   "storage.init",
   async (event, downloadDir, someNumStr, cacheDir) => {
-    if (!downloadDir) {
-      downloadDir = resolve(app.getPath("downloads"), "CloudMusic");
-      if (process.env.FLATPAK_ID) {
-        // We store to only writable path in Flatpak
-        downloadDir = resolve(
-          app.getPath("home"),
-          ".var",
-          "app",
-          process.env.FLATPAK_ID,
-          "downloads"
-        );
+    if (!downloadDir || !(await isWritableDir(downloadDir, true))) {
+      downloadDir = getDefaultDownloadDir();
+      if (!(await isWritableDir(downloadDir, true))) {
+        new Notification({
+          title: "Open Orpheus",
+          body: "默认下载目录不可写，下载功能可能无法正常使用",
+        }).show();
       }
     }
-    if (!cacheDir) {
+    if (!cacheDir || !(await isWritableDir(cacheDir, true))) {
       cacheDir = defaultCache;
+      if (!(await isWritableDir(cacheDir, true))) {
+        dialog.showErrorBox("Open Orpheus", "缓存目录不可写，Open Orpheus 将退出。");
+        app.quit();
+        return [downloadDir, cacheDir];
+      }
     }
-    await Promise.all([
-      mkdir(downloadDir, { recursive: true }),
-      mkdir(cacheDir, { recursive: true }),
-    ]);
     setDownloadPath(downloadDir);
     setCachePath(cacheDir);
     createCacheManager();
@@ -395,14 +404,7 @@ registerCallHandler<[string, string, string], void>(
 );
 
 registerCallHandler<[string], [boolean]>("storage.testwriteable", async (event, path) => {
-  const testFilePath = join(path, "open_orpheus_test_writable.tmp");
-  try {
-    await writeFile(testFilePath, "test", { flag: "w" });
-    await unlink(testFilePath);
-    return [true];
-  } catch {
-    return [false];
-  }
+  return [await isWritableDir(path)];
 });
 
 registerCallHandler<[string, "abs" | "rel", "", string], void>(

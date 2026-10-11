@@ -19,6 +19,7 @@ import {
   isAppUrl,
   isFileNotFound,
   isMusicFile,
+  isWritableDir,
   normalizePath,
   sanitizeRelativePath,
   selectBestMusicPic,
@@ -93,6 +94,34 @@ describe("fileExists", () => {
     vi.spyOn(vol.promises, "access").mockRejectedValueOnce(error);
 
     await expect(fileExists("/a/b.txt")).rejects.toThrow("denied");
+  });
+});
+
+describe("isWritableDir", () => {
+  beforeEach(() => {
+    vol.reset();
+  });
+
+  it("returns true for an existing writable directory and cleans up the probe", async () => {
+    vol.fromJSON({ "/a/b/.keep": "" });
+
+    await expect(isWritableDir("/a/b")).resolves.toBe(true);
+    expect(vol.readdirSync("/a/b")).toEqual([".keep"]);
+  });
+
+  it("returns false for a missing directory unless create is requested", async () => {
+    await expect(isWritableDir("/a/missing")).resolves.toBe(false);
+    await expect(isWritableDir("/a/missing", true)).resolves.toBe(true);
+    expect(vol.existsSync("/a/missing")).toBe(true);
+  });
+
+  it("returns false when the probe cannot be created", async () => {
+    vol.fromJSON({ "/a/b/.keep": "" });
+    vi.spyOn(vol.promises, "mkdtemp").mockRejectedValueOnce(
+      Object.assign(new Error("denied"), { code: "EACCES" })
+    );
+
+    await expect(isWritableDir("/a/b")).resolves.toBe(false);
   });
 });
 
