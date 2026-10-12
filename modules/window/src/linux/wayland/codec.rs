@@ -59,6 +59,7 @@ pub(crate) const REQ_CREATE_POSITIONER: u16 = 1;
 pub(crate) const REQ_SET_TITLE: u16 = 2;
 pub(crate) const REQ_MOVE: u16 = 5;
 pub(crate) const REQ_SET_INPUT_REGION: u16 = 5;
+pub(crate) const REQ_COMMIT: u16 = 6;
 pub(crate) const WL_POINTER_RELEASE: u16 = 1;
 pub(crate) const WL_SEAT_RELEASE: u16 = 3;
 pub(crate) const REQ_DESTROY: u16 = 0;
@@ -304,7 +305,7 @@ mod tests {
 
     use libc::{AF_INET, AF_UNIX, c_char, c_void, sa_family_t, sockaddr_un};
 
-    use super::super::test_support::{declared_message, header, wl_string};
+    use super::super::test_support::{declared_message, header_bytes, wl_string};
     use super::{
         WlMessage, decode, is_wayland_socket, parse_custom_title, parse_header, parse_wl_str,
         rfixed_i32, ru32,
@@ -333,21 +334,25 @@ mod tests {
     fn headers_are_validated_before_use() {
         assert_eq!(parse_header(&[]), None);
         assert_eq!(parse_header(&[0; 7]), None);
-        assert_eq!(parse_header(&header(1, 0, 0)), None, "size 0");
+        assert_eq!(parse_header(&header_bytes(1, 0, 0)), None, "size 0");
         assert_eq!(
-            parse_header(&header(1, 0, 4)),
+            parse_header(&header_bytes(1, 0, 4)),
             None,
             "smaller than a header"
         );
-        assert_eq!(parse_header(&header(1, 0, 10)), None, "not word aligned");
+        assert_eq!(
+            parse_header(&header_bytes(1, 0, 10)),
+            None,
+            "not word aligned"
+        );
     }
 
     #[test]
     fn headers_expose_object_opcode_and_size() {
-        assert_eq!(parse_header(&header(42, 3, 16)), Some((42, 3, 16)));
-        assert_eq!(parse_header(&header(7, 1, 8)), Some((7, 1, 8)));
+        assert_eq!(parse_header(&header_bytes(42, 3, 16)), Some((42, 3, 16)));
+        assert_eq!(parse_header(&header_bytes(7, 1, 8)), Some((7, 1, 8)));
         assert_eq!(
-            parse_header(&header(u32::MAX, u16::MAX, 65_532)),
+            parse_header(&header_bytes(u32::MAX, u16::MAX, 65_532)),
             Some((u32::MAX, u16::MAX, 65_532)),
             "the size field is only 16 bits wide"
         );

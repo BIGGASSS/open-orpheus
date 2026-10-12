@@ -4,21 +4,23 @@
 //! `(&mut WaylandConn, &WlMessage)` returning an [`Action`]. The dispatch
 //! tables below are the single index of every intercept point.
 
-mod layer_shell;
+mod conversion;
 mod objects;
 mod pointer;
 pub(crate) mod roles;
+mod shadow;
 mod title;
 mod touch;
 
 use std::os::fd::RawFd;
 
 use super::codec::{
-    EVT_DELETE_ID, EVT_GLOBAL, EVT_GLOBAL_REMOVE, Iface, REQ_BIND, REQ_CREATE_SURFACE, REQ_DESTROY,
-    REQ_GET_POINTER, REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION,
+    EVT_DELETE_ID, EVT_GLOBAL, EVT_GLOBAL_REMOVE, Iface, REQ_BIND, REQ_COMMIT, REQ_CREATE_SURFACE,
+    REQ_DESTROY, REQ_GET_POINTER, REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION,
     REQ_GET_TOUCH, REQ_GET_XDG_SURFACE, REQ_SET_ICON, REQ_SET_TITLE, REQ_SET_WINDOW_GEOMETRY,
     WL_POINTER_RELEASE, WL_SEAT_RELEASE, WL_TOUCH_RELEASE, WlMessage,
 };
+use super::inject;
 use super::state::WaylandConn;
 
 /// What to do with a message after its handler ran.
@@ -62,14 +64,14 @@ fn dispatch_request_inner(
     // A converted window answers to xdg-shell opcodes but must not reach the
     // compositor as xdg-shell.
     if conn.layer_windows.contains_key(&msg.object_id) {
-        return layer_shell::on_client_toplevel_request(fd, conn, msg);
+        return shadow::on_client_toplevel_request(conn, msg, fx);
     }
     if conn.xdg_to_layer.contains_key(&msg.object_id) {
-        return layer_shell::on_client_xdg_surface_request(conn, msg);
+        return shadow::on_client_xdg_surface_request(conn, msg);
     }
     // A decoration object the compositor has no toplevel for.
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::ZxdgToplevelDecoration) {
-        return layer_shell::on_decoration_object_request(conn, msg);
+        return shadow::on_decoration_object_request(conn, msg);
     }
 
     let Some(iface) = conn.ifaces.get(&msg.object_id).copied() else {
@@ -84,22 +86,36 @@ fn dispatch_request_inner(
         (Iface::WlSeat, REQ_GET_TOUCH) => objects::on_get_touch(conn, msg),
         (Iface::XdgWmBase, REQ_GET_XDG_SURFACE) => objects::on_get_xdg_surface(conn, msg),
         (Iface::ZxdgDecorationManager, REQ_GET_TOPLEVEL_DECORATION) => {
-            layer_shell::on_get_toplevel_decoration(conn, msg)
+            shadow::on_get_toplevel_decoration(conn, msg)
         }
-        (Iface::XdgToplevelIconManager, REQ_SET_ICON) => layer_shell::on_set_icon(conn, msg),
-        // The role is assigned here, so this is also where a layer-shell
-        // declaration is consumed.
-        (Iface::XdgSurface, REQ_GET_TOPLEVEL) => layer_shell::on_get_toplevel(fd, conn, msg, fx),
+        (Iface::XdgToplevelIconManager, REQ_SET_ICON) => shadow::on_set_icon(conn, msg),
+        // `roles::dispatch` owns the role decision and only delegates here when
+        // no window identity could change the outcome, so the id is unknown.
+        (Iface::XdgSurface, REQ_GET_TOPLEVEL) => objects::on_get_toplevel(fd, conn, msg, fx, None),
         (Iface::XdgSurface, REQ_SET_WINDOW_GEOMETRY) => objects::on_popup_geometry(conn, msg),
         (Iface::WlSeat, WL_SEAT_RELEASE) => objects::on_destroy(fd, conn, msg, fx),
         (Iface::XdgWmBase, REQ_DESTROY) => objects::on_destroy(fd, conn, msg, fx),
-        (Iface::XdgToplevel, REQ_SET_TITLE) => title::on_set_title(fd, conn, msg),
+        (Iface::XdgToplevel, REQ_SET_TITLE) => title::on_set_title(conn, msg, fx),
         (Iface::XdgPopupShim, REQ_SET_TITLE) => {
-            let _ = title::on_set_title(fd, conn, msg);
+            let _ = title::on_set_title(conn, msg, fx);
             Action::Suppress
         }
         (Iface::XdgPopupShim, REQ_DESTROY) => objects::on_destroy(fd, conn, msg, fx),
         (Iface::XdgPopupShim, _) => Action::Suppress,
+        // A window's recorded input region is emitted immediately before the
+        // commit that adopts it. Sending it any later — as the proxy does for
+        // other injections, through the application-facing socketpair — would
+        // place it after this commit and leave the surface on the old region
+        // until something committed again.
+        (Iface::WlSurface, REQ_COMMIT) => {
+            match inject::region_requests_for_commit(conn, msg.object_id) {
+                Some(mut requests) => {
+                    requests.push(msg.raw().to_vec());
+                    Action::Replace(requests)
+                }
+                None => Action::Forward,
+            }
+        }
         (Iface::WlSurface | Iface::XdgSurface | Iface::XdgToplevel, REQ_DESTROY) => {
             objects::on_destroy(fd, conn, msg, fx)
         }
@@ -122,14 +138,14 @@ pub(crate) fn dispatch_event(conn: &mut WaylandConn, msg: &WlMessage, fx: &mut E
 
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::WlRegistry) {
         return match msg.opcode {
-            EVT_GLOBAL => layer_shell::on_registry_global(conn, msg),
-            EVT_GLOBAL_REMOVE => layer_shell::on_registry_global_remove(conn, msg),
+            EVT_GLOBAL => conversion::on_registry_global(conn, msg),
+            EVT_GLOBAL_REMOVE => conversion::on_registry_global_remove(conn, msg),
             _ => Action::Forward,
         };
     }
 
     if conn.layer_windows.contains_key(&msg.object_id) {
-        return layer_shell::on_layer_event(conn, msg);
+        return shadow::on_layer_event(conn, msg);
     }
 
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::WlPointer) {
@@ -151,7 +167,7 @@ mod tests {
     use super::super::codec::{
         BTN_PRESSED, EVT_BUTTON, EVT_ENTER, EVT_LEAVE, EVT_TOUCH_DOWN, decorate_title,
     };
-    use super::super::state::{CUSTOM_ID_MAP, WaylandConn, init_state};
+    use super::super::state::{WaylandConn, init_state};
     use super::super::test_support::{message, wl_string, word};
     use super::*;
 
@@ -304,12 +320,8 @@ mod tests {
         let secret = "window-42";
         let mut args = wl_string(&decorate_title(secret, "Real Title"));
         args.extend_from_slice(&[0, 0, 0, 0]);
-        let action = dispatch_request(
-            FD,
-            &mut conn,
-            &message(30, REQ_SET_TITLE, &args),
-            &mut Effects::default(),
-        );
+        let mut fx = Effects::default();
+        let action = dispatch_request(FD, &mut conn, &message(30, REQ_SET_TITLE, &args), &mut fx);
 
         let Action::Replace(messages) = action else {
             panic!("expected the title to be rewritten");
@@ -321,16 +333,9 @@ mod tests {
             "Real Title"
         );
 
-        let map = CUSTOM_ID_MAP.get().expect("initialised").lock().unwrap();
-        assert_eq!(map.get(secret).copied(), Some((FD, 10)));
-        drop(map);
-        // The surface keeps the name too, so it outlives the lookup above.
+        // The surface keeps the name for the rest of its life; the same
+        // association marks any recorded input region for the next commit.
         assert_eq!(conn.surface_ids.get(&10).map(String::as_str), Some(secret));
-        if let Some(m) = CUSTOM_ID_MAP.get()
-            && let Ok(mut map) = m.lock()
-        {
-            map.remove(secret);
-        }
     }
 
     #[test]

@@ -91,6 +91,7 @@ vi.mock("@open-orpheus/window", () => ({
   captureNextWindowFirstCursorEnter: mocks.capture,
   cancelNextWindowFirstCursorEnter: mocks.cancelCapture,
   getCursorPosition: vi.fn(),
+  forgetWindowState: vi.fn(),
 }));
 vi.mock("../../src/main/menu/skin", () => ({ menuSkin: {}, registerMenuSkinUpdater: vi.fn() }));
 vi.mock("../../src/main/menu/popup-support", () => ({

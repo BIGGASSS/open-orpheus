@@ -41,9 +41,10 @@ const hoisted = vi.hoisted(() => {
     platform: vi.fn(() => "linux" as NodeJS.Platform),
     desktop: vi.fn(() => 0),
     setInputRegion: vi.fn(() => true),
-    useLayerShell: vi.fn(() => true),
+    setWindowLayerShell: vi.fn(() => true),
+    transferWindowState: vi.fn(() => true),
+    forgetWindowState: vi.fn(() => true),
     showFailure: null as Error | null,
-    cancelLayerShell: vi.fn(() => true),
     validateLayerShell: vi.fn(() => true),
     layerShellRefusedCallbacks,
     onLayerShellRefused: vi.fn((callback: unknown) => {
@@ -58,8 +59,8 @@ const hoisted = vi.hoisted(() => {
     /** Stands in for the native decoration of a managed title. */
     decorateTitle: vi.fn((id: string, title: string) => `#${id}#${title}`),
     layerShellAvailable: vi.fn(() => true),
-    /** Layer-shell declarations made by the time a window was constructed. */
-    layerCallsAtConstruction: [] as number[],
+    /** Layer-shell policy registrations made by the time a window was built. */
+    policyCallsAtConstruction: [] as number[],
     lifecycle: { state: 0 },
     shutdownFinalizers: [] as Array<{ name: string; run: () => void }>,
     drainWindowCallbacks: vi.fn(),
@@ -77,8 +78,9 @@ vi.mock("@open-orpheus/window", () => ({
   LayerShellLayer: { Background: 0, Bottom: 1, Top: 2, Overlay: 3 },
   getDesktopEnvironment: hoisted.desktop,
   setInputRegion: hoisted.setInputRegion,
-  useLayerShellForNextWindow: hoisted.useLayerShell,
-  cancelLayerShellForNextWindow: hoisted.cancelLayerShell,
+  setWindowLayerShell: hoisted.setWindowLayerShell,
+  transferWindowState: hoisted.transferWindowState,
+  forgetWindowState: hoisted.forgetWindowState,
   validateLayerShellOptions: hoisted.validateLayerShell,
   onLayerShellRoleRefused: hoisted.onLayerShellRefused,
   decorateWindowTitle: hoisted.decorateTitle,
@@ -143,7 +145,7 @@ vi.mock("electron", () => {
         height: opts.height ?? 0,
       };
       FakeBrowserWindow.byId.set(this.id, this);
-      hoisted.layerCallsAtConstruction.push(hoisted.useLayerShell.mock.calls.length);
+      hoisted.policyCallsAtConstruction.push(hoisted.setWindowLayerShell.mock.calls.length);
     }
 
     bounds: { x: number; y: number; width: number; height: number };
@@ -300,16 +302,18 @@ beforeEach(() => {
   hoisted.desktop.mockReturnValue(WAYLAND);
   hoisted.setInputRegion.mockReset();
   hoisted.setInputRegion.mockReturnValue(true);
-  hoisted.useLayerShell.mockReset();
-  hoisted.useLayerShell.mockReturnValue(true);
-  hoisted.cancelLayerShell.mockReset();
-  hoisted.cancelLayerShell.mockReturnValue(true);
+  hoisted.setWindowLayerShell.mockReset();
+  hoisted.setWindowLayerShell.mockReturnValue(true);
+  hoisted.transferWindowState.mockReset();
+  hoisted.transferWindowState.mockReturnValue(true);
+  hoisted.forgetWindowState.mockReset();
+  hoisted.forgetWindowState.mockReturnValue(true);
   hoisted.validateLayerShell.mockReset();
   hoisted.validateLayerShell.mockReturnValue(true);
   hoisted.decorateTitle.mockClear();
   hoisted.layerShellAvailable.mockReset();
   hoisted.layerShellAvailable.mockReturnValue(true);
-  hoisted.layerCallsAtConstruction.length = 0;
+  hoisted.policyCallsAtConstruction.length = 0;
   hoisted.lifecycle.state = 0;
 });
 
@@ -591,7 +595,7 @@ describe("ManagedWindow close policy", () => {
 });
 
 describe("ManagedWindow native state", () => {
-  it("re-applies the input region when Wayland recreates the surface", () => {
+  it("records the input region against the window id and lets the native layer own it", () => {
     const managed = new TestWindow();
     const wnd = asFake(managed.window);
 
@@ -601,68 +605,25 @@ describe("ManagedWindow native state", () => {
       { x: 0, y: 0, w: 10, h: 10 },
     ]);
 
+    // Wayland applies the recorded region when the id names a surface, so a
+    // show does not re-send it.
     wnd.emit("show");
 
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(2);
-    expect(hoisted.setInputRegion).toHaveBeenLastCalledWith(managedId(wnd), [
-      { x: 0, y: 0, w: 10, h: 10 },
-    ]);
+    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(1);
   });
 
-  it("retries until the surface accepts the state", async () => {
-    vi.useFakeTimers();
-    const managed = new TestWindow();
-    const wnd = asFake(managed.window);
-
-    hoisted.setInputRegion
-      .mockReturnValueOnce(true) // the immediate apply
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
-
-    managed.setWindowInputRegion(regions);
-    wnd.emit("show");
-
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(2); // immediate + first attempt
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(3);
-
-    await vi.advanceTimersByTimeAsync(50);
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(4);
-
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(4);
-  });
-
-  it("stops retrying once the surface is gone", () => {
-    vi.useFakeTimers();
-    const managed = new TestWindow();
-    const wnd = asFake(managed.window);
-
-    hoisted.setInputRegion.mockReturnValueOnce(true).mockReturnValue(false);
-
-    managed.setWindowInputRegion(regions);
-    wnd.emit("show");
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(2);
-
-    wnd.emit("hide");
-    vi.advanceTimersByTime(5000);
-
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(2);
-  });
-
-  it("clears the input region on show when it was cleared explicitly", () => {
+  it("clears the input region immediately when it was cleared explicitly", () => {
     const managed = new TestWindow();
     const wnd = asFake(managed.window);
 
     managed.setWindowInputRegion([]);
     wnd.emit("show");
 
+    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(1);
     expect(hoisted.setInputRegion).toHaveBeenLastCalledWith(managedId(wnd), null);
   });
 
-  it("re-sends the input region on X11 shows, in case the first call was early", () => {
+  it("applies the input region once on X11, without a show re-send", () => {
     hoisted.desktop.mockReturnValue(X11);
     const managed = new TestWindow();
     const wnd = asFake(managed.window);
@@ -673,15 +634,14 @@ describe("ManagedWindow native state", () => {
       { x: 0, y: 0, w: 10, h: 10 },
     ]);
 
+    // The handle is valid by the time the renderer asks, so a show adds
+    // nothing; a replacement page re-sends its own region on mount.
     wnd.emit("show");
 
-    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(2);
-    expect(hoisted.setInputRegion).toHaveBeenLastCalledWith(expect.any(Buffer), [
-      { x: 0, y: 0, w: 10, h: 10 },
-    ]);
+    expect(hoisted.setInputRegion).toHaveBeenCalledTimes(1);
   });
 
-  it("reports the native result of an immediate apply", () => {
+  it("forwards the native result, which reports that the region was recorded", () => {
     hoisted.setInputRegion.mockReturnValue(false);
     const managed = new TestWindow();
 
@@ -690,7 +650,7 @@ describe("ManagedWindow native state", () => {
 });
 
 describe("OnDemandWindow recreation", () => {
-  it("keeps native state across window recreation", async () => {
+  it("keeps the recorded input region across window recreation", async () => {
     const managed = new TestOnDemandWindow();
     const firstShow = managed.show();
     const first = asFake(managed.window);
@@ -713,9 +673,10 @@ describe("OnDemandWindow recreation", () => {
 
     expect(second).not.toBe(first);
     expect(second.id).not.toBe(first.id);
-    expect(hoisted.setInputRegion).toHaveBeenCalledWith(managedId(second), [
-      { x: 0, y: 0, w: 10, h: 10 },
-    ]);
+    // The wrapper keeps its id, so the native layer still holds the region and
+    // applies it to the replacement surface; nothing is re-sent from here.
+    expect(managed.window).not.toBeNull();
+    expect(hoisted.setInputRegion).not.toHaveBeenCalled();
   });
 });
 
@@ -774,18 +735,14 @@ describe("switchWindowPolicy", () => {
     expect(ManagedWindow.fromName("test_window")).toBe(next);
   });
 
-  it("re-applies the moved input region to the replacement", () => {
+  it("re-keys the native state for the replacement", () => {
     const managed = new TestWindow();
     managed.setWindowInputRegion(regions);
-    hoisted.setInputRegion.mockClear();
+    hoisted.transferWindowState.mockClear();
 
     const next = switchWindowPolicy(managed, () => new TestWindow());
-    const replacement = asFake(next.window);
-    replacement.emit("show");
 
-    expect(hoisted.setInputRegion).toHaveBeenLastCalledWith(managedId(replacement), [
-      { x: 0, y: 0, w: 10, h: 10 },
-    ]);
+    expect(hoisted.transferWindowState).toHaveBeenCalledWith(managed.id, next.id);
   });
 
   it("keeps a visible window visible after the switch", () => {
@@ -812,19 +769,16 @@ describe("switchWindowPolicy", () => {
     const previous = asFake(managed.window);
     previous.show();
     managed.setWindowInputRegion(regions);
-    hoisted.setInputRegion.mockClear();
 
     const next = switchWindowPolicy(managed, () => new TestOnDemandWindow());
     const recreated = asFake(next.window);
 
     expect(previous.destroyed).toBe(true);
     expect(recreated).not.toBe(previous);
+    expect(hoisted.transferWindowState).toHaveBeenCalledWith(managed.id, next.id);
 
     recreated.emit("ready-to-show");
     expect(recreated.isVisible()).toBe(true);
-    expect(hoisted.setInputRegion).toHaveBeenLastCalledWith(managedId(recreated), [
-      { x: 0, y: 0, w: 10, h: 10 },
-    ]);
   });
 
   it("keeps the position and size the window had", () => {
@@ -879,7 +833,7 @@ describe("ManagedWindow layer shell", () => {
     anchorRight: true,
   };
 
-  it("declares the role before the surface is created", () => {
+  it("registers the policy before the window is built", () => {
     class LayerWindow extends ManagedWindow {
       constructor() {
         super();
@@ -891,118 +845,43 @@ describe("ManagedWindow layer shell", () => {
     const managed = new LayerWindow();
 
     expect(managed.window).not.toBeNull();
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
-    expect(hoisted.layerCallsAtConstruction.at(-1)).toBeGreaterThan(0);
+    expect(hoisted.setWindowLayerShell).toHaveBeenCalledWith(managed.id, options);
+    expect(hoisted.policyCallsAtConstruction.at(-1)).toBeGreaterThan(0);
   });
 
-  it("declares from the pre-create hook, without ordering requirements", () => {
-    class HookWindow extends ManagedWindow {
-      constructor() {
-        super();
-        this.createBrowserWindow({});
-      }
-
-      protected beforeSurfaceCreated(): void {
-        this.setLayerShell(options);
-      }
-    }
-
-    const managed = new HookWindow();
-
-    expect(managed.window).not.toBeNull();
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
-    expect(hoisted.layerCallsAtConstruction.at(-1)).toBeGreaterThan(0);
-  });
-
-  it("records the state without arming a declaration", () => {
+  it("registers immediately and does not depend on a show", () => {
     const managed = new TestWindow();
-    hoisted.useLayerShell.mockClear();
-    hoisted.cancelLayerShell.mockClear();
+    hoisted.setWindowLayerShell.mockClear();
 
     expect(managed.setLayerShell(options)).toBe(true);
+    expect(hoisted.setWindowLayerShell).toHaveBeenCalledWith(managed.id, options);
 
-    expect(managed.layerShell).toEqual(options);
-    expect(
-      hoisted.useLayerShell,
-      "a declaration may only be in flight while a surface is being created"
-    ).not.toHaveBeenCalled();
-  });
-
-  it("arms for the show of a hidden window, which is what creates the surface", () => {
-    const managed = new TestWindow();
-    managed.setLayerShell(options);
-    hoisted.useLayerShell.mockClear();
-
-    void managed.show();
-
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
-  });
-
-  it("arms once per surface, not once per show", () => {
-    const managed = new TestWindow();
-    managed.setLayerShell(options);
-    hoisted.useLayerShell.mockClear();
-
-    void managed.show();
-    void managed.show();
-
-    expect(hoisted.useLayerShell).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not withdraw the native declaration when Electron emits show", () => {
-    const managed = new TestWindow();
-    managed.setLayerShell(options);
-    hoisted.cancelLayerShell.mockClear();
-    void managed.show();
-    expect(hoisted.cancelLayerShell).not.toHaveBeenCalled();
-    asFake(managed.window).emit("hide");
-    expect(hoisted.cancelLayerShell).toHaveBeenCalledWith(managed.id);
-  });
-
-  it("withdraws by owner after a failed showInactive and can retry", () => {
-    const managed = new TestWindow();
-    managed.setLayerShell(options);
-    const wnd = asFake(managed.window);
-    hoisted.showFailure = new Error("show failed");
-    expect(() => wnd.showInactive()).toThrow("show failed");
-    expect(hoisted.cancelLayerShell).toHaveBeenCalledWith(managed.id);
-    hoisted.showFailure = null;
-    expect(() => wnd.showInactive()).not.toThrow();
-    wnd.destroy();
-    expect(hoisted.cancelLayerShell).toHaveBeenCalledWith(managed.id);
-  });
-
-  it("arms again after a hide, which takes the surface away", () => {
-    const managed = new TestWindow();
-    managed.setLayerShell(options);
+    // The native layer applies the policy when the surface takes its role, so
+    // a show registers nothing extra.
+    hoisted.setWindowLayerShell.mockClear();
     void managed.show();
     void managed.hide();
-    hoisted.useLayerShell.mockClear();
 
-    void managed.show();
-
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
+    expect(hoisted.setWindowLayerShell).not.toHaveBeenCalled();
   });
 
-  it("arms when another module shows the window directly", () => {
+  it("withdraws the policy with null", () => {
     const managed = new TestWindow();
     managed.setLayerShell(options);
-    hoisted.useLayerShell.mockClear();
+    hoisted.setWindowLayerShell.mockClear();
 
-    // `menu.ts`, the `winhelper.*` calls and `app.ts` show the raw window.
-    asFake(managed.window).show();
+    expect(managed.setLayerShell(null)).toBe(true);
 
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
+    expect(hoisted.setWindowLayerShell).toHaveBeenCalledWith(managed.id, null);
   });
 
-  it("arms when another module shows the window without focus", () => {
+  it("releases the native state of a wrapper that is discarded", () => {
     const managed = new TestWindow();
-    managed.setLayerShell(options);
-    hoisted.useLayerShell.mockClear();
+    hoisted.forgetWindowState.mockClear();
 
-    asFake(managed.window).showInactive();
+    managed.releaseNativeState();
 
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
+    expect(hoisted.forgetWindowState).toHaveBeenCalledWith(managed.id);
   });
 
   it("surfaces a refused layer-shell role for its window", async () => {
@@ -1025,96 +904,76 @@ describe("ManagedWindow layer shell", () => {
     expect(event.data).toBe(managed.window);
   });
 
-  it("leaves a hidden window's surface to its first show", () => {
-    class HiddenWindow extends ManagedWindow {
+  it("registers once for an on-demand window's first surface", () => {
+    class OnDemandLayerWindow extends TestOnDemandWindow {
       constructor() {
         super();
-        this.setLayerShell(options);
-        this.createBrowserWindow({ show: false });
-      }
-    }
-
-    const managed = new HiddenWindow();
-
-    expect(hoisted.useLayerShell, "a hidden window has no surface yet").not.toHaveBeenCalled();
-
-    void managed.show();
-
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
-  });
-
-  it("arms for an on-demand window's first show", () => {
-    class OnDemandLayerWindow extends TestOnDemandWindow {
-      protected beforeSurfaceCreated(): void {
         this.setLayerShell(options);
       }
     }
 
     const managed = new OnDemandLayerWindow();
-    hoisted.useLayerShell.mockClear();
+    expect(hoisted.setWindowLayerShell).toHaveBeenCalledWith(managed.id, options);
 
+    hoisted.setWindowLayerShell.mockClear();
     void managed.show();
     // The window is created hidden and shown once it can be displayed.
     asFake(managed.window).emit("ready-to-show");
 
-    expect(hoisted.useLayerShell).toHaveBeenCalledWith(options, managed.id);
+    // The policy was registered ahead of the surface; showing adds nothing.
+    expect(hoisted.setWindowLayerShell).not.toHaveBeenCalled();
     expect(asFake(managed.window).isVisible()).toBe(true);
   });
 
-  it("leaves another window's declaration in the queue", () => {
+  it("leaves an ordinary window's policy unregistered", () => {
     const layer = new TestWindow();
     layer.setLayerShell(options);
-    layer.createSurface();
-    hoisted.useLayerShell.mockClear();
-    hoisted.cancelLayerShell.mockClear();
+    hoisted.setWindowLayerShell.mockClear();
 
-    // Declarations are handed out oldest first, so a window that declares
-    // nothing must neither arm one nor withdraw one that is not its own.
     const ordinary = new TestWindow();
 
-    expect(ordinary.layerShell).toBeNull();
-    expect(hoisted.useLayerShell).not.toHaveBeenCalled();
-    expect(hoisted.cancelLayerShell).not.toHaveBeenCalled();
+    expect(ordinary.window).not.toBeNull();
+    expect(hoisted.setWindowLayerShell).not.toHaveBeenCalled();
   });
 
-  it("withdraws its own declaration when the state is cleared", () => {
+  it("re-keys the policy for the replacement on a policy switch", () => {
     const managed = new TestWindow();
     managed.setLayerShell(options);
-    void managed.show();
-    // A show event is not proof the native thread consumed the declaration.
-    hoisted.cancelLayerShell.mockClear();
+    hoisted.transferWindowState.mockClear();
 
-    expect(managed.setLayerShell(null)).toBe(true);
+    const next = switchWindowPolicy(managed, () => new TestWindow());
 
-    expect(managed.layerShell).toBeNull();
-    expect(hoisted.cancelLayerShell).toHaveBeenCalledWith(managed.id);
+    expect(hoisted.transferWindowState).toHaveBeenCalledWith(managed.id, next.id);
   });
 
-  it("reports state it cannot send", () => {
+  it("reports options it cannot send but still registers them", () => {
     hoisted.validateLayerShell.mockReturnValue(false);
     const managed = new TestWindow();
+    hoisted.setWindowLayerShell.mockClear();
 
     expect(managed.setLayerShell(options)).toBe(false);
-    expect(hoisted.useLayerShell).not.toHaveBeenCalled();
-  });
-
-  it("clears the recorded state", () => {
-    const managed = new TestWindow();
-    managed.setLayerShell(options);
-
-    expect(managed.setLayerShell(null)).toBe(true);
-
-    expect(managed.layerShell).toBeNull();
+    // The policy is registered so it can apply if the compositor later takes it.
+    expect(hoisted.setWindowLayerShell).toHaveBeenCalledWith(managed.id, options);
   });
 
   it("refuses when the compositor has no layer shell", () => {
     hoisted.layerShellAvailable.mockReturnValue(false);
     const managed = new TestWindow();
-    hoisted.useLayerShell.mockClear();
+    hoisted.setWindowLayerShell.mockClear();
 
     expect(managed.setLayerShell(options)).toBe(false);
-    expect(hoisted.useLayerShell).not.toHaveBeenCalled();
-    expect(managed.layerShell).toEqual(options);
+    expect(hoisted.setWindowLayerShell).toHaveBeenCalledWith(managed.id, options);
+  });
+
+  it("does not touch native state off Wayland", () => {
+    hoisted.desktop.mockReturnValue(X11);
+    const managed = new TestWindow();
+
+    expect(managed.setLayerShell(options)).toBe(false);
+    expect(hoisted.setWindowLayerShell).not.toHaveBeenCalled();
+
+    expect(managed.setLayerShell(null)).toBe(true);
+    expect(hoisted.setWindowLayerShell).not.toHaveBeenCalled();
   });
 
   it("reports availability only on Wayland", () => {

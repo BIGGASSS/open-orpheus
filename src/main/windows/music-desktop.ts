@@ -14,6 +14,22 @@ import { isAppUrl } from "../util";
 export default class MusicDesktopWindow extends ManagedWindow {
   constructor(url: string) {
     super();
+    // A surface's role is decided when the window's first role object is
+    // created, which can happen inside `createBrowserWindow`, so the policy has
+    // to be registered before the window exists.
+    this.setLayerShell({
+      namespace: "Open Orpheus Music Desktop",
+      layer: LayerShellLayer.Background,
+      anchorBottom: true,
+      anchorLeft: true,
+      anchorRight: true,
+      anchorTop: true,
+      marginBottom: 0,
+      marginLeft: 0,
+      marginRight: 0,
+      marginTop: 0,
+      exclusiveZone: -1,
+    });
     const wnd = this.createBrowserWindow({
       title: "Open Orpheus Music Desktop",
       frame: false,
@@ -58,21 +74,5 @@ export default class MusicDesktopWindow extends ManagedWindow {
         throw e;
       }
     }
-  }
-
-  protected beforeSurfaceCreated(): void {
-    this.setLayerShell({
-      namespace: "Open Orpheus Music Desktop",
-      layer: LayerShellLayer.Background,
-      anchorBottom: true,
-      anchorLeft: true,
-      anchorRight: true,
-      anchorTop: true,
-      marginBottom: 0,
-      marginLeft: 0,
-      marginRight: 0,
-      marginTop: 0,
-      exclusiveZone: -1,
-    });
   }
 }

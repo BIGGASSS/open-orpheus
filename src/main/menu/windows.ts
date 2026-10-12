@@ -132,6 +132,7 @@ export function createMenuWindow(
   height = menuWindowOptions.height
 ): BrowserWindow {
   menuWindow?.window?.destroy();
+  menuWindow?.releaseNativeState();
   menuWindow = new MenuWindow(width, height);
   return unwrap(menuWindow);
 }
@@ -145,17 +146,20 @@ export function createSubmenuWindow(
 
 export function createOverlayWindow(): BrowserWindow {
   overlayWindow?.window?.destroy();
+  overlayWindow?.releaseNativeState();
   overlayWindow = new OverlayWindow();
   return unwrap(overlayWindow);
 }
 
 export function destroyMenuWindow() {
   menuWindow?.window?.destroy();
+  menuWindow?.releaseNativeState();
   menuWindow = null;
 }
 
 export function destroyOverlayWindow() {
   overlayWindow?.window?.destroy();
+  overlayWindow?.releaseNativeState();
   overlayWindow = null;
 }
 

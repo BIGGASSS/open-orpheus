@@ -27,25 +27,47 @@ pub(super) fn is_layer_shell_available() -> bool {
     state::is_layer_shell_available()
 }
 
-/// Queue `options` for the named managed window, or the next eligible toplevel
-/// when no owner is provided.
-pub(super) fn declare_layer_window(options: LayerShellOptions, owner: Option<String>) -> bool {
-    state::declare_named_layer_window(options, owner)
+/// Register (or replace) the layer-shell policy for a managed window.
+///
+/// Validates the options first: a declaration the compositor would answer with
+/// a protocol error must never reach the wire.
+pub(super) fn set_layer_policy(window_id: &str, options: LayerShellOptions) -> bool {
+    let options = options.with_defaults();
+    if options.validate().is_err() {
+        return false;
+    }
+    state::set_layer_policy(window_id, options)
+}
+
+/// Withdraw the layer-shell policy for a managed window.
+pub(super) fn clear_layer_policy(window_id: &str) -> bool {
+    state::clear_layer_policy(window_id)
+}
+
+/// Re-key everything the proxy knows about a window under another window id.
+pub(super) fn transfer_window_state(from_id: &str, to_id: &str) -> bool {
+    let policy = state::transfer_layer_policy(from_id, to_id);
+    let region = inject::transfer_input_region(from_id, to_id);
+    policy && region
+}
+
+/// Release everything the proxy recorded for a window that will not return.
+///
+/// Distinct from [`transfer_window_state`]: the window keeps nothing, so a
+/// discarded wrapper cannot leave policy or region records behind.
+pub(super) fn forget_window_state(window_id: &str) -> bool {
+    state::clear_layer_policy(window_id);
+    inject::forget_input_region(window_id);
+    true
 }
 
 /// Whether `options` survive the defaults and the protocol's rules.
 ///
-/// The same checks `declare_layer_window` applies, without taking a place in
-/// the queue: a caller can be told its declaration is unsendable before a
-/// window exists to attach it to.
+/// The same checks `set_layer_policy` applies, without storing anything: a
+/// caller can be told its options are unsendable before a window exists to
+/// attach them to.
 pub(super) fn validate_layer_window(options: LayerShellOptions) -> bool {
     options.with_defaults().validate().is_ok()
-}
-
-/// Withdraw the newest pending declaration for the given owner, or the newest
-/// unnamed declaration when no owner is provided.
-pub(super) fn cancel_layer_window(owner: Option<&str>) -> bool {
-    state::cancel_named_layer_window(owner)
 }
 
 /// Decorate a title with the managed window id the proxy keys windows on.

@@ -155,9 +155,9 @@ export type MediaSessionEvents =
   | { type: 'Pause' }
   | { type: 'Next' }
   | { type: 'Previous' }
-  | { type: 'Seek', delta: number }
-  | { type: 'SetPosition', position: number }
-  | { type: 'SetVolume', volume: number }
+  | { type: 'Seek'; delta: number }
+  | { type: 'SetPosition'; position: number }
+  | { type: 'SetVolume'; volume: number }
 
 export interface MprisMetadata {
   trackId: string

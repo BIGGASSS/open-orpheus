@@ -311,15 +311,8 @@ pub(crate) fn sync_callback(new_id: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::super::codec::REQ_GET_POPUP;
+    use super::super::test_support::header;
     use super::*;
-
-    fn header(buf: &[u8]) -> (u32, u16, usize) {
-        (
-            u32::from_ne_bytes(buf[0..4].try_into().unwrap()),
-            (u32::from_ne_bytes(buf[4..8].try_into().unwrap()) & 0xFFFF) as u16,
-            (u32::from_ne_bytes(buf[4..8].try_into().unwrap()) >> 16) as usize,
-        )
-    }
 
     #[test]
     fn sizes_and_opcodes_match_the_protocol() {

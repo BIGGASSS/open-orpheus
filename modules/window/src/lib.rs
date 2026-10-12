@@ -364,34 +364,77 @@ pub fn is_layer_shell_available() -> bool {
     }
 }
 
-/// Make the next window a layer surface.
+/// Register (or clear) the layer-shell policy for a managed window.
 ///
-/// Must be called before the window — or, for an existing window, its surface —
-/// is created: a compositor assigns a surface's role once and never changes it.
-/// Returns whether the declaration was accepted; when it is refused the window
-/// is still created as an ordinary one.
-/// Named declarations belong only to that managed window; omit `owner` to use
-/// the next eligible toplevel instead.
+/// The policy is keyed by the id the application names the window with, so it
+/// may be registered before the window — or its surface — exists. It is read
+/// once, when the proxy resolves a surface's window id from the decorated
+/// title: a surface that has not taken a role yet becomes a layer surface with
+/// these options, and a surface that is already an ordinary toplevel can never
+/// become one.
+///
+/// Returns whether the policy was accepted; `None` clears the policy. Refused
+/// options are not stored, and the window is still created as an ordinary one.
 #[napi]
-pub fn use_layer_shell_for_next_window(options: LayerShellOptions, owner: Option<String>) -> bool {
+pub fn set_window_layer_shell(window_id: String, options: Option<LayerShellOptions>) -> bool {
     #[cfg(target_os = "linux")]
     {
-        crate::linux::declare_layer_window(&options, owner)
+        match options {
+            Some(options) => crate::linux::set_layer_policy(&window_id, &options),
+            None => crate::linux::clear_layer_policy(&window_id),
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = options;
-        let _ = owner;
+        let _ = window_id;
+        options.is_none()
+    }
+}
+
+/// Re-key the native state recorded for one managed window under another.
+///
+/// A policy switch replaces the wrapper, and the replacement is a different
+/// window with a different id. The layer-shell policy and the recorded input
+/// region follow it, so nothing has to be mirrored on the application side.
+#[napi]
+pub fn transfer_window_state(from_id: String, to_id: String) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::transfer_window_state(&from_id, &to_id)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (from_id, to_id);
         false
     }
 }
 
-/// Whether a layer-shell declaration could be sent.
+/// Release the native state recorded for a window that will not return.
 ///
-/// The same option validation `useLayerShellForNextWindow` applies, without
-/// queueing anything: callers can report a declaration that could never be
-/// sent, and a settings UI can check a choice before anything is created.
+/// The layer-shell policy and the recorded input region are dropped, so a
+/// discarded wrapper cannot leave them behind. Do not call this for a window
+/// that merely hides and is shown again: it keeps its id and needs the record.
+#[napi]
+pub fn forget_window_state(window_id: String) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::forget_window_state(&window_id)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window_id;
+        false
+    }
+}
+
+/// Whether a layer-shell policy could be sent.
+///
+/// The same option validation `setWindowLayerShell` applies, without storing
+/// anything: callers can report options that could never be sent, and a
+/// settings UI can check a choice before anything is created.
 ///
 /// This answers for the options only, never for the compositor: whether it
 /// takes layer surfaces at all is `isLayerShellAvailable()`, and a caller that
@@ -406,23 +449,6 @@ pub fn validate_layer_shell_options(options: LayerShellOptions) -> bool {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = options;
-        false
-    }
-}
-
-/// Withdraw the newest pending declaration for `owner`.
-///
-/// Omit `owner` to withdraw the newest unnamed declaration.
-#[napi]
-pub fn cancel_layer_shell_for_next_window(owner: Option<String>) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        crate::linux::cancel_layer_window(owner.as_deref())
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = owner;
         false
     }
 }

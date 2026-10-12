@@ -5,11 +5,10 @@
 //! layer's name for the window and stays attached to the surface for as long as
 //! the surface lives; the real title is the only part the compositor ever sees.
 
-use std::os::fd::RawFd;
-
 use super::super::codec::{REQ_SET_TITLE, WlMessage, parse_custom_title};
-use super::super::state::{CUSTOM_ID_MAP, WaylandConn};
-use super::Action;
+use super::super::inject;
+use super::super::state::WaylandConn;
+use super::{Action, Effects};
 
 /// `xdg_toplevel.set_title(title)`, rebuilt without the id.
 fn set_title(object_id: u32, title: &str) -> Vec<u8> {
@@ -30,7 +29,7 @@ fn set_title(object_id: u32, title: &str) -> Vec<u8> {
     message
 }
 
-pub(crate) fn on_set_title(fd: RawFd, conn: &mut WaylandConn, msg: &WlMessage) -> Action {
+pub(crate) fn on_set_title(conn: &mut WaylandConn, msg: &WlMessage, _fx: &mut Effects) -> Action {
     let Some(title) = msg.str_text(8) else {
         return Action::Forward;
     };
@@ -46,12 +45,11 @@ pub(crate) fn on_set_title(fd: RawFd, conn: &mut WaylandConn, msg: &WlMessage) -
         // The surface keeps the name for as long as it lives: a destroy in
         // between must not leave a window that cannot be reported by name.
         conn.surface_ids.insert(wl_surf, managed_id.to_string());
-        if let Some(m) = CUSTOM_ID_MAP.get()
-            && let Ok(mut map) = m.lock()
-        {
-            map.retain(|_, mapped| *mapped != (fd, wl_surf));
-            map.insert(managed_id.to_string(), (fd, wl_surf));
-        }
+        // The id now names this surface, so the window's recorded region has to
+        // reach it. It is emitted before this surface's next commit — a
+        // `set_input_region` only takes effect at a commit — and re-marking it
+        // is what gives a re-created surface the region again.
+        inject::mark_region_pending(managed_id);
     }
 
     Action::Replace(vec![set_title(msg.object_id, real_title)])
@@ -60,16 +58,8 @@ pub(crate) fn on_set_title(fd: RawFd, conn: &mut WaylandConn, msg: &WlMessage) -
 #[cfg(test)]
 mod tests {
     use super::super::super::codec::decorate_title;
+    use super::super::super::test_support::header;
     use super::*;
-
-    fn header(buf: &[u8]) -> (u32, u16, usize) {
-        let packed = u32::from_ne_bytes(buf[4..8].try_into().unwrap());
-        (
-            u32::from_ne_bytes(buf[0..4].try_into().unwrap()),
-            (packed & 0xFFFF) as u16,
-            (packed >> 16) as usize,
-        )
-    }
 
     #[test]
     fn a_decorated_title_is_rewritten_without_the_id() {

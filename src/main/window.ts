@@ -3,14 +3,15 @@ import type { BrowserWindowConstructorOptions } from "electron";
 import Emittery from "emittery";
 
 import {
-  cancelLayerShellForNextWindow,
   decorateWindowTitle,
   drainWindowCallbacks,
+  forgetWindowState,
   getDesktopEnvironment,
   isLayerShellAvailable,
   onLayerShellRoleRefused,
   setInputRegion,
-  useLayerShellForNextWindow,
+  setWindowLayerShell,
+  transferWindowState,
   validateLayerShellOptions,
   DesktopEnvironment,
 } from "@open-orpheus/window";
@@ -36,18 +37,19 @@ const managedWindows = new Set<WeakRef<ManagedWindow>>();
  * before the window — and therefore before its surface — exists.
  */
 let nextManagedWindowId = 1;
-const finalizationRegistry = new FinalizationRegistry<WeakRef<ManagedWindow>>((held) => {
-  managedWindows.delete(held);
+const finalizationRegistry = new FinalizationRegistry<{
+  ref: WeakRef<ManagedWindow>;
+  id: string;
+}>((held) => {
+  managedWindows.delete(held.ref);
+  // A discarded wrapper must not leave recorded native state behind. Ids are
+  // never reused, so this can only affect a window that is already gone.
+  try {
+    forgetWindowState(held.id);
+  } catch {
+    // The native module can already be gone while the process tears down.
+  }
 });
-
-/**
- * Backoff used while probing for a usable platform surface after a show.
- *
- * On Wayland the surface is not guaranteed to exist by the time Electron emits
- * `show`, so state that belongs to the surface has to be re-sent until the
- * native module accepts it.
- */
-const REAPPLY_DELAYS_MS = [0, 50, 100, 200, 400] as const;
 
 /** Reap completed native callbacks on the JS thread, including while idle. */
 const CALLBACK_REAP_INTERVAL_MS = 50;
@@ -105,10 +107,11 @@ export interface WindowEvents {
   /**
    * The compositor refused the layer-shell role for this window.
    *
-   * A surface's role is never released, so this happens when the window was
-   * already an ordinary toplevel when the declaration reached it. It cannot be
-   * fixed on that surface: whatever handles this has to re-create the window,
-   * which is the only way to get a surface that can still take the role.
+   * A surface's role is never released, so this happens when the window's
+   * surface took an ordinary toplevel role before its policy was seen. It
+   * cannot be fixed on that surface: whatever handles this has to re-create the
+   * window, which is the only way to get a surface that can still take the
+   * role.
    */
   layerShellRefused: BrowserWindow;
 }
@@ -162,28 +165,6 @@ void app.whenReady().then(() => {
   });
 });
 
-/**
- * State the native module owns for a window.
- *
- * `postShow` state can be restored at any point after the surface exists, and
- * is therefore replayed whenever the surface is recreated. State that has to be
- * armed *before* the surface exists (a layer-shell role, for example) cannot be
- * replayed from a `show` event and belongs to a pre-create phase instead.
- */
-interface NativeWindowState {
-  postShow: {
-    /** `null` = never managed, `[]` = explicitly cleared. */
-    inputRegions: InputRegion[] | null;
-  };
-  /**
-   * State that has to be armed before the surface exists, because a compositor
-   * assigns a surface's role once and never lets it change.
-   */
-  preCreate: {
-    layerShell: LayerShellOptions | null;
-  };
-}
-
 export abstract class ManagedWindow<
   Data extends WindowData = WindowData,
 > extends Emittery<WindowEvents> {
@@ -198,24 +179,6 @@ export abstract class ManagedWindow<
   private _closeNotifier: (() => void) | null = null;
   private _menuCloseUnsubscribe: (() => void) | null = null;
 
-  private readonly _nativeState: NativeWindowState = {
-    postShow: { inputRegions: null },
-    preCreate: { layerShell: null },
-  };
-  /** The window's own show methods, while this wrapper has them wrapped. */
-  private _originalShow: (() => void) | null = null;
-  private _originalShowInactive: (() => void) | null = null;
-  /** Bumped whenever the platform surface may have been replaced. */
-  private _surfaceGeneration = 0;
-  private _reapplyTimer: NodeJS.Timeout | null = null;
-  /**
-   * A layer-shell declaration is in flight for this window's next surface.
-   *
-   * Exactly one named declaration may be outstanding per surface. Only this
-   * window consumes it; hide/unbind and failed shows withdraw it by owner id.
-   */
-  private _layerShellDeclared = false;
-
   /**
    * The window this wrapper owns.
    *
@@ -227,9 +190,6 @@ export abstract class ManagedWindow<
     if (this._window === value) return;
     const previous = this._window;
     if (previous) {
-      this.cancelReapply();
-      this._surfaceGeneration++;
-      this.cancelLayerShell();
       this.setMenu(undefined);
       managedBrowserWindows.delete(previous);
       browserManagedWindowMap.delete(previous);
@@ -317,21 +277,12 @@ export abstract class ManagedWindow<
   private readonly _showListener = () => {
     const wnd = this._window;
     if (!wnd) return;
-    // A new show may bring a new platform surface with it.
-    this._surfaceGeneration++;
-    // Electron's show event can precede native role creation. Keep ownership
-    // until hide/unbind so it cannot cancel a declaration still being consumed.
-    this.reapplyNativeState();
     void this.emit("show", wnd);
   };
   private readonly _hideListener = () => {
     const wnd = this._window;
     if (!wnd) return;
     this.setMenu(undefined);
-    this._surfaceGeneration++;
-    // The next show brings a new surface, which needs its own declaration.
-    this.cancelLayerShell();
-    this.cancelReapply();
     this.onWindowHidden();
     void this.emit("hide", wnd);
   };
@@ -351,7 +302,7 @@ export abstract class ManagedWindow<
     super();
 
     const ref = new WeakRef(this);
-    finalizationRegistry.register(this, ref);
+    finalizationRegistry.register(this, { ref, id: this.id });
     managedWindows.add(ref);
   }
 
@@ -374,33 +325,6 @@ export abstract class ManagedWindow<
     if (this.isWayland()) {
       wnd.on("page-title-updated", this._pageTitleListener);
     }
-
-    // A window's role is taken from whichever show creates (or re-creates) its
-    // surface, and other modules show windows straight through the
-    // `BrowserWindow` — `menu.ts`, the `winhelper.*` calls, `app.ts`. Wrapping
-    // the two show methods here is what makes the layer-shell declaration
-    // unmissable, instead of depending on every caller going through this
-    // wrapper.
-    this._originalShow = wnd.show.bind(wnd);
-    wnd.show = () => {
-      this.armLayerShellForShow(wnd);
-      try {
-        this._originalShow?.();
-      } catch (error) {
-        this.cancelLayerShell();
-        throw error;
-      }
-    };
-    this._originalShowInactive = wnd.showInactive.bind(wnd);
-    wnd.showInactive = () => {
-      this.armLayerShellForShow(wnd);
-      try {
-        this._originalShowInactive?.();
-      } catch (error) {
-        this.cancelLayerShell();
-        throw error;
-      }
-    };
 
     wnd.webContents.setWindowOpenHandler(({ url }) => {
       if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -443,27 +367,19 @@ export abstract class ManagedWindow<
     wnd.off("hide", this._hideListener);
     wnd.off("close", this._closeListener);
     wnd.off("page-title-updated", this._pageTitleListener);
-
-    if (this._originalShow) wnd.show = this._originalShow;
-    if (this._originalShowInactive) wnd.showInactive = this._originalShowInactive;
-    this._originalShow = null;
-    this._originalShowInactive = null;
   }
 
   /**
    * The only place a `BrowserWindow` is constructed.
    *
    * Subclasses call this instead of `new BrowserWindow` so that ownership,
-   * lifetime and native state all stay in one place. A window created shown
-   * brings its surface with it, so the layer-shell declaration is armed here;
-   * one created hidden has no surface until its first show, which arms it.
+   * lifetime and native state all stay in one place. A window class that is a
+   * layer surface registers its policy with [`setLayerShell`] before calling
+   * this, so the policy is in place before the window — and therefore its first
+   * role object — exists.
    */
   protected createBrowserWindow(options: BrowserWindowConstructorOptions): BrowserWindow {
     if (this._window) this.window = null;
-    // A new window is a new surface: nothing is in flight for it.
-    this.cancelLayerShell();
-    this.beforeSurfaceCreated();
-    if (options.show !== false) this.armLayerShell();
     // Supply the decorated title from the first native role initialization,
     // not only after construction: the proxy needs the id to select its role.
     const { title, ...rest } = options;
@@ -472,7 +388,9 @@ export abstract class ManagedWindow<
     try {
       wnd = new BrowserWindow({ ...rest, title: this.decoratedTitle() });
     } catch (error) {
-      this.cancelLayerShell();
+      // The policy may have been registered before the window existed; a window
+      // that was never created must not leave one behind.
+      if (this.isWayland()) setWindowLayerShell(this.id, null);
       throw error;
     }
     this.window = wnd;
@@ -486,79 +404,42 @@ export abstract class ManagedWindow<
   }
 
   /**
-   * Record the layer-shell state this window should take, or clear it with
+   * Register the layer-shell policy this window should take, or clear it with
    * `null`.
    *
-   * Nothing is sent to the compositor here. A declaration can only be honoured
-   * while a surface is being created, because a compositor assigns a surface's
-   * role once and never changes it: the recorded state is armed for the
-   * creation itself, or for the show that brings the surface, and nowhere else.
-   * A window that is already a layer surface stays one for as long as its
-   * surface lives, so `null` only takes effect once the window is recreated.
+   * Call this before the window is created: the native layer keys the policy on
+   * this window's id and consults it once, when the surface's role is decided,
+   * and a role can be taken inside `new BrowserWindow` when the window is
+   * created shown. A compositor assigns a surface's role once and never changes
+   * it, so a window that is already a layer surface stays one for as long as its
+   * surface lives, and `null` only takes effect once the window is recreated.
    *
-   * Returns whether the declaration could be sent at all; `false` means the
+   * The wrapper keeps no copy: the native layer owns the state, and
+   * [`transferStateTo`] re-keys it when a policy switch replaces the window.
+   *
+   * Returns whether the policy could be sent at all; `false` means the
    * compositor cannot take layer surfaces or the options are unsendable, and
    * this window will be an ordinary toplevel.
    */
   setLayerShell(options: LayerShellOptions | null): boolean {
-    this._nativeState.preCreate.layerShell = options;
-    if (options === null) {
-      // Withdraw a declaration that is still in flight, so it cannot convert a
-      // surface this window no longer wants.
-      if (this._layerShellDeclared) this.cancelLayerShell();
-      this._layerShellDeclared = false;
-      return true;
-    }
+    if (!this.isWayland()) return options === null;
+    setWindowLayerShell(this.id, options);
+    if (options === null) return true;
     return ManagedWindow.isLayerShellAvailable() && validateLayerShellOptions(options);
   }
 
-  /** The layer-shell state this window declares, if any. */
-  get layerShell(): LayerShellOptions | null {
-    return this._nativeState.preCreate.layerShell;
-  }
-
   /**
-   * Declare layer-shell state for the surface this window is about to create.
+   * Release the native state this wrapper recorded (its layer-shell policy and
+   * input region).
    *
-   * Called by [`createBrowserWindow`] immediately before the `BrowserWindow`
-   * exists, which is the only moment a role can be taken. Subclasses that are
-   * layer surfaces override this and call [`setLayerShell`], so the state is
-   * recorded no matter whether the surface arrives with the creation or with
-   * the first show — the declaration queue is positional, and it is only ever
-   * armed for a surface that is about to be created.
+   * Call it when the wrapper will not be used again. A window that merely hides
+   * and is shown later keeps its id and must not call this: the native layer
+   * needs the record for the surface it creates next. A discarded wrapper is
+   * released automatically when it is collected; this is for callers that want
+   * it to happen now.
    */
-  protected beforeSurfaceCreated(): void {}
-
-  /**
-   * Arm the recorded state before a show that may bring a surface.
-   *
-   * Called from the wrapped `show`/`showInactive`, so it does not matter which
-   * module asks for the window to appear.
-   */
-  private armLayerShellForShow(wnd: BrowserWindow): void {
-    if (!wnd.isVisible()) this.armLayerShell();
-  }
-
-  /**
-   * Arm the recorded layer-shell state for the surface about to be created.
-   *
-   * Called immediately before an action that brings a surface with it — a
-   * creation, or a show of a hidden window — and nowhere else. The queue is
-   * positional, so a declaration armed while no surface follows is handed to
-   * whichever window creates the next one.
-   */
-  protected armLayerShell(): boolean {
-    const options = this._nativeState.preCreate.layerShell;
-    if (!options) return false;
-    if (this._layerShellDeclared) return true;
-    const accepted = useLayerShellForNextWindow(options, this.id);
-    this._layerShellDeclared = accepted;
-    return accepted;
-  }
-
-  private cancelLayerShell(): void {
-    if (this._layerShellDeclared) cancelLayerShellForNextWindow(this.id);
-    this._layerShellDeclared = false;
+  releaseNativeState(): void {
+    forgetWindowState(this.id);
   }
 
   /** The bound window, or `null` once it is gone. Never a destroyed window. */
@@ -618,17 +499,8 @@ export abstract class ManagedWindow<
 
   private releaseWindow(wnd: BrowserWindow) {
     if (this._window !== wnd) return;
-    this.cancelReapply();
-    this._surfaceGeneration++;
     browserManagedWindowMap.delete(wnd);
     this.window = null;
-  }
-
-  private cancelReapply() {
-    if (this._reapplyTimer) {
-      clearTimeout(this._reapplyTimer);
-      this._reapplyTimer = null;
-    }
   }
 
   /**
@@ -636,56 +508,6 @@ export abstract class ManagedWindow<
    */
   private isWayland(): boolean {
     return getDesktopEnvironment() === DesktopEnvironment.Wayland;
-  }
-
-  /**
-   * Re-send surface-scoped state, retrying until the surface accepts it.
-   *
-   * The generation guard cancels work left over from a previous surface.
-   */
-  private reapplyNativeState() {
-    if (!this.isWayland()) {
-      // The input region is set on the window itself here, not on a surface, so
-      // a call that failed because the window was not ready yet is simply sent
-      // again on the next show.
-      this.reapplyInputRegion();
-      return;
-    }
-    if (this._reapplyTimer) return;
-
-    const generation = this._surfaceGeneration;
-    let attempt = 0;
-    const step = () => {
-      this._reapplyTimer = null;
-      if (generation !== this._surfaceGeneration) return;
-      const wnd = this.liveWindow();
-      if (!wnd) return;
-      if (this.applyPostShowState()) return;
-      if (attempt >= REAPPLY_DELAYS_MS.length) {
-        console.warn(`[window] gave up re-applying native state for window ${wnd.id}`);
-        return;
-      }
-      this._reapplyTimer = setTimeout(step, REAPPLY_DELAYS_MS[attempt++]);
-    };
-    step();
-  }
-
-  /** Returns whether the surface was ready to accept the state. */
-  private applyPostShowState(): boolean {
-    const regions = this._nativeState.postShow.inputRegions;
-    if (regions === null) return true;
-    // The managed id is on the wire from the prologue on, so this lands as soon
-    // as the surface exists; the native module reports failure until then,
-    // which is our readiness probe.
-    return setInputRegion(this.id, toNativeRegions(regions));
-  }
-
-  /** Re-send the recorded input region to the window itself. */
-  private reapplyInputRegion(): void {
-    const regions = this._nativeState.postShow.inputRegions;
-    const wnd = this.liveWindow();
-    if (regions === null || !wnd) return;
-    setInputRegion(wnd.getNativeWindowHandle(), toNativeRegions(regions));
   }
 
   setData<K extends keyof Data>(key: K, data: Data[K]): void;
@@ -772,22 +594,25 @@ export abstract class ManagedWindow<
   }
 
   /**
-   * Sets window's input region
+   * Set the regions this window receives input in.
    *
-   * Only available on Linux, for Windows and macOS, use Electron's `BrowserWindow.setIgnoreMouseEvent`.
-   * @param wnd
-   * @param regions
-   * @returns
+   * Only available on Linux; on Windows and macOS use Electron's
+   * `BrowserWindow.setIgnoreMouseEvents`.
+   *
+   * On Wayland the native layer owns the region: it records it against the
+   * window id and emits it immediately before the surface's next commit, since
+   * a `set_input_region` is only adopted at a commit. The return value
+   * therefore means "recorded", not "already in effect".
    */
   setWindowInputRegion(regions: InputRegion[]): boolean {
-    this._nativeState.postShow.inputRegions = regions;
-
-    const wnd = this.liveWindow();
-    if (!wnd) return false;
     const native = toNativeRegions(regions);
+
     if (this.isWayland()) {
       return setInputRegion(this.id, native);
     }
+
+    const wnd = this.liveWindow();
+    if (!wnd) return false;
     return setInputRegion(wnd.getNativeWindowHandle(), native);
   }
 
@@ -799,8 +624,8 @@ export abstract class ManagedWindow<
   }
 
   show(): void | Promise<void> {
-    // The window's own `show` arms the declaration first (see
-    // `attachWindowListeners`), so this stays a plain forward.
+    // The native layer applies the window's registered policy when its surface
+    // takes a role, so this stays a plain forward.
     this.liveWindow()?.show();
   }
 
@@ -828,14 +653,13 @@ export abstract class ManagedWindow<
     const merged: Record<string, unknown> = Object.create(null);
     Object.assign(merged, target._data, this._data);
     target._data = merged;
-    target._nativeState.postShow = this._nativeState.postShow;
-    target._nativeState.preCreate = this._nativeState.preCreate;
     target.setTitle(this._title);
     this._data = Object.create(null);
-    this._nativeState.postShow = { inputRegions: null };
-    this._nativeState.preCreate = { layerShell: null };
+    // Native state is keyed by window id, so the native layer re-keys its own:
+    // the discarded id keeps nothing and the replacement owns what it held.
+    if (this.isWayland()) transferWindowState(this.id, target.id);
     // A target that already has a window was bound before this state arrived,
-    // so nothing else would apply it; one without a window applies it on bind.
+    // so nothing else would apply the rest of it.
     const wnd = target.liveWindow();
     if (wnd) target.applyRecordedState(wnd);
   }
@@ -927,8 +751,8 @@ export abstract class OnDemandWindow<T extends WindowData = WindowData> extends 
     this.windowState = {
       alive: true,
     };
-    // This show creates the surface, and `createWindow` declares the role for
-    // it through `createBrowserWindow`.
+    // This show creates the surface, whose role the native layer decides from
+    // the policy `createWindow` registered through `createBrowserWindow`.
     const wnd = this.createWindow(this.windowState);
     if (this.window !== wnd) this.window = wnd;
     return new Promise<void>((resolve) => {
@@ -938,8 +762,6 @@ export abstract class OnDemandWindow<T extends WindowData = WindowData> extends 
       wnd.once("closed", closedHandler);
       wnd.once("ready-to-show", () => {
         wnd.off("closed", closedHandler);
-        // This show is what creates the surface, and the window's own `show`
-        // arms the declaration for it.
         wnd.show();
         resolve();
       });
@@ -965,12 +787,12 @@ export abstract class OnDemandWindow<T extends WindowData = WindowData> extends 
  * on screen, or was waiting to appear, is shown again, so the switch is only
  * visible as a re-created window, not as a disappearing one.
  *
- * Pre-create state (a layer-shell declaration) moves too. A window class that
- * declares its own layer-shell state does it for the surface it creates, so the
- * replacement is a layer surface right away; state recorded by a caller on the
- * discarded wrapper can only take effect on the surface the replacement creates
- * afterwards, because `create` has already built one by the time the hand-off
- * happens.
+ * The layer-shell policy moves with the rest. A window class that registers its
+ * own policy does it for the surface it creates, so the replacement is a layer
+ * surface right away; policy registered on the discarded wrapper is carried
+ * over to the replacement's id, and can only take effect on the surface the
+ * replacement creates afterwards, because `create` has already built one by the
+ * time the hand-off happens.
  */
 export function switchWindowPolicy(
   current: ManagedWindow | null,
