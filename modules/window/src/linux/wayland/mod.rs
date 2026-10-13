@@ -47,8 +47,9 @@ pub(super) fn clear_layer_policy(window_id: &str) -> bool {
 /// Re-key everything the proxy knows about a window under another window id.
 pub(super) fn transfer_window_state(from_id: &str, to_id: &str) -> bool {
     let policy = state::transfer_layer_policy(from_id, to_id);
+    let popup = state::transfer_popup_policy(from_id, to_id);
     let region = inject::transfer_input_region(from_id, to_id);
-    policy && region
+    policy && popup && region
 }
 
 /// Release everything the proxy recorded for a window that will not return.
@@ -57,6 +58,7 @@ pub(super) fn transfer_window_state(from_id: &str, to_id: &str) -> bool {
 /// discarded wrapper cannot leave policy or region records behind.
 pub(super) fn forget_window_state(window_id: &str) -> bool {
     state::clear_layer_policy(window_id);
+    state::clear_popup_policy(window_id);
     inject::forget_input_region(window_id);
     true
 }
@@ -88,17 +90,17 @@ pub(super) fn set_input_region_rects(window_id: &str, rects: Option<&[Rect]>) ->
     inject::set_input_region_rects(window_id, rects)
 }
 
-pub(super) fn arm_next_window_as_popup(
-    parent_window_id: &str,
+pub(super) fn set_popup_policy(
     target_window_id: &str,
+    parent_window_id: &str,
     width: i32,
     height: i32,
     anchor: Option<(i32, i32)>,
     shadow_inset: i32,
-) -> Option<u32> {
-    state::arm_next_popup_with_inset(
-        parent_window_id,
+) -> bool {
+    state::set_popup_policy(
         target_window_id,
+        parent_window_id,
         width,
         height,
         anchor,
@@ -106,12 +108,22 @@ pub(super) fn arm_next_window_as_popup(
     )
 }
 
-pub(super) fn cancel_pending_popup(token: u32) -> bool {
-    state::cancel_pending_popup(token)
+pub(super) fn clear_popup_policy(target_window_id: &str) -> bool {
+    state::clear_popup_policy(target_window_id)
 }
 
 pub(super) fn window_is_popup(window_id: &str) -> bool {
     state::window_is_popup(window_id)
+}
+
+/// How long ago the most recent pointer press landed in `window_id`.
+pub(super) fn window_last_press_age_ms(window_id: &str) -> Option<u32> {
+    state::window_last_press_age(window_id).map(|age| age.as_millis() as u32)
+}
+
+/// Whether a pointer is currently over `window_id`'s surface.
+pub(super) fn window_pointer_inside(window_id: &str) -> bool {
+    state::window_pointer_inside(window_id)
 }
 
 pub(super) fn on_next_pointer_axis(

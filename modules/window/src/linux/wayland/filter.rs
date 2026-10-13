@@ -1,4 +1,5 @@
 use std::os::fd::RawFd;
+use std::time::Instant;
 
 use super::super::proxy::{Cmsg, Direction, Filtered};
 use super::codec;
@@ -128,6 +129,7 @@ pub(crate) fn filter(
                 wl_surface_id: surf_id,
                 x,
                 y,
+                at: Instant::now(),
             },
         );
         buttons.latest = Some((fd, surf_id));

@@ -700,12 +700,11 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
-module.exports.armNextWindowAsPopup = nativeBinding.armNextWindowAsPopup
 module.exports.cancelNextWindowFirstCursorEnter = nativeBinding.cancelNextWindowFirstCursorEnter
-module.exports.cancelPendingPopup = nativeBinding.cancelPendingPopup
 module.exports.cancelWindowPointerAxisCapture = nativeBinding.cancelWindowPointerAxisCapture
 module.exports.captureNextWindowFirstCursorEnter = nativeBinding.captureNextWindowFirstCursorEnter
 module.exports.captureWindowNextPointerAxis = nativeBinding.captureWindowNextPointerAxis
+module.exports.clearWindowPopupPolicy = nativeBinding.clearWindowPopupPolicy
 module.exports.decorateWindowTitle = nativeBinding.decorateWindowTitle
 module.exports.DesktopEnvironment = nativeBinding.DesktopEnvironment
 module.exports.dragWindow = nativeBinding.dragWindow
@@ -714,12 +713,15 @@ module.exports.forgetWindowState = nativeBinding.forgetWindowState
 module.exports.getCursorPosition = nativeBinding.getCursorPosition
 module.exports.getDesktopEnvironment = nativeBinding.getDesktopEnvironment
 module.exports.isLayerShellAvailable = nativeBinding.isLayerShellAvailable
+module.exports.isWindowPointerInside = nativeBinding.isWindowPointerInside
 module.exports.isWindowWaylandPopup = nativeBinding.isWindowWaylandPopup
 module.exports.LayerShellLayer = nativeBinding.LayerShellLayer
 module.exports.onLayerShellRoleRefused = nativeBinding.onLayerShellRoleRefused
 module.exports.setInputRegion = nativeBinding.setInputRegion
 module.exports.setWindowAsBackground = nativeBinding.setWindowAsBackground
 module.exports.setWindowLayerShell = nativeBinding.setWindowLayerShell
+module.exports.setWindowPopupPolicy = nativeBinding.setWindowPopupPolicy
 module.exports.supportsNativeWaylandPopup = nativeBinding.supportsNativeWaylandPopup
 module.exports.transferWindowState = nativeBinding.transferWindowState
 module.exports.validateLayerShellOptions = nativeBinding.validateLayerShellOptions
+module.exports.windowLastPressAgeMs = nativeBinding.windowLastPressAgeMs

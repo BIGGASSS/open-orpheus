@@ -332,22 +332,22 @@ pub fn cancel_next_window_first_cursor_enter(token: u32) -> bool {
     cancelled
 }
 
-pub fn arm_next_window_as_popup(
-    parent_window_id: String,
+pub fn set_popup_policy(
     target_window_id: String,
+    parent_window_id: String,
     width: i32,
     height: i32,
     anchor_x: Option<i32>,
     anchor_y: Option<i32>,
     shadow_inset: Option<i32>,
-) -> Option<u32> {
+) -> bool {
     if !supports_native_wayland_popup() {
-        return None;
+        return false;
     }
     let anchor = anchor_x.zip(anchor_y);
-    wayland::arm_next_window_as_popup(
-        &parent_window_id,
+    wayland::set_popup_policy(
         &target_window_id,
+        &parent_window_id,
         width,
         height,
         anchor,
@@ -355,12 +355,20 @@ pub fn arm_next_window_as_popup(
     )
 }
 
-pub fn cancel_pending_popup(token: u32) -> bool {
-    wayland::cancel_pending_popup(token)
+pub fn clear_popup_policy(target_window_id: String) -> bool {
+    wayland::clear_popup_policy(&target_window_id)
 }
 
 pub fn is_window_wayland_popup(window_id: String) -> bool {
     wayland::window_is_popup(&window_id)
+}
+
+pub fn window_last_press_age_ms(window_id: String) -> Option<u32> {
+    wayland::window_last_press_age_ms(&window_id)
+}
+
+pub fn window_pointer_inside(window_id: String) -> bool {
+    wayland::window_pointer_inside(&window_id)
 }
 
 pub fn capture_window_next_pointer_axis(

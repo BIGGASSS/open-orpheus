@@ -39,8 +39,8 @@ const mocks = vi.hoisted(() => {
     windows: [] as Window[],
     supports: vi.fn(() => true),
     desktop: "wayland",
-    arm: vi.fn(() => 1 as number | null),
-    cancel: vi.fn(),
+    setPolicy: vi.fn(() => true),
+    clearPolicy: vi.fn(),
     isPopup: vi.fn(() => true),
     quitting: new Set<() => void>(),
     state: 0,
@@ -51,12 +51,19 @@ vi.mock("@open-orpheus/window", () => ({
   DesktopEnvironment: { Wayland: "wayland" },
   getDesktopEnvironment: () => mocks.desktop,
   supportsNativeWaylandPopup: mocks.supports,
-  armNextWindowAsPopup: mocks.arm,
-  cancelPendingPopup: mocks.cancel,
+  setWindowPopupPolicy: mocks.setPolicy,
+  clearWindowPopupPolicy: mocks.clearPolicy,
   isWindowWaylandPopup: mocks.isPopup,
+  isWindowPointerInside: vi.fn(() => true),
+  windowLastPressAgeMs: vi.fn(() => null),
 }));
 vi.mock("../../src/main/window", () => ({
-  ManagedWindow: { fromBrowserWindow: (window: { id: string }) => ({ id: window.id }) },
+  ManagedWindow: {
+    fromBrowserWindow: (window: { id: string }) => ({
+      id: window.id,
+      releaseNativeState: vi.fn(),
+    }),
+  },
 }));
 vi.mock("../../src/main/menu/windows", () => ({
   createPopupProbeWindow: () => {
@@ -88,7 +95,7 @@ describe("session-native popup support", () => {
     mocks.windows.length = 0;
     mocks.quitting.clear();
     mocks.supports.mockReturnValue(true);
-    mocks.arm.mockReturnValue(1);
+    mocks.setPolicy.mockReturnValue(true);
     mocks.isPopup.mockReturnValue(true);
     mocks.desktop = "wayland";
     mocks.state = 0;
@@ -104,8 +111,8 @@ describe("session-native popup support", () => {
     expect(await initializeWaylandPopupSupport(window)).toBe(true);
     expect(mocks.windows).toHaveLength(1);
     expect(mocks.windows[0].destroyed).toBe(true);
-    expect(mocks.arm).toHaveBeenCalledExactlyOnceWith("parent", "probe-0", 1, 1, 0, 0, 0);
-    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith(1);
+    expect(mocks.setPolicy).toHaveBeenCalledExactlyOnceWith("probe-0", "parent", 1, 1, 0, 0, 0);
+    expect(mocks.clearPolicy).toHaveBeenCalledExactlyOnceWith("probe-0");
     expect(mocks.quitting.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -121,7 +128,7 @@ describe("session-native popup support", () => {
     expect(await initializeWaylandPopupSupport(window)).toBe(true);
     expect(mocks.windows).toHaveLength(2);
     expect(mocks.windows[0].destroyed).toBe(true);
-    expect(mocks.cancel).toHaveBeenCalledTimes(2);
+    expect(mocks.clearPolicy).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -152,11 +159,11 @@ describe("session-native popup support", () => {
     const { initializeWaylandPopupSupport } = await import("../../src/main/menu/popup-support");
     expect(await initializeWaylandPopupSupport(parent())).toBe(false);
     expect(mocks.windows).toHaveLength(0);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
   });
 
   it("cancels on parent close without caching a false incompatibility", async () => {
-    mocks.arm.mockReturnValue(null);
+    mocks.setPolicy.mockReturnValue(false);
     const { initializeWaylandPopupSupport } = await import("../../src/main/menu/popup-support");
     const window = new mocks.Window("parent");
     const probing = initializeWaylandPopupSupport(window as unknown as BrowserWindow);
@@ -164,7 +171,7 @@ describe("session-native popup support", () => {
     expect(await probing).toBe(false);
     expect(mocks.windows[0].destroyed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
-    mocks.arm.mockReturnValue(1);
+    mocks.setPolicy.mockReturnValue(true);
     expect(await initializeWaylandPopupSupport(parent())).toBe(true);
     expect(mocks.windows).toHaveLength(2);
   });
@@ -178,15 +185,15 @@ describe("session-native popup support", () => {
     expect(await probing).toBe(false);
     await vi.advanceTimersByTimeAsync(5);
     expect(mocks.windows[0].destroyed).toBe(true);
-    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith(1);
+    expect(mocks.clearPolicy).toHaveBeenCalledExactlyOnceWith("probe-0");
     expect(mocks.quitting.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
     expect(await initializeWaylandPopupSupport(parent())).toBe(false);
     expect(mocks.windows).toHaveLength(1);
   });
 
-  it("retries missing popup data after the parent becomes ready", async () => {
-    mocks.arm.mockReturnValue(null);
+  it("retries a refused popup policy on the next menu click", async () => {
+    mocks.setPolicy.mockReturnValue(false);
     const { initializeWaylandPopupSupport } = await import("../../src/main/menu/popup-support");
     const probing = initializeWaylandPopupSupport(parent());
     await vi.advanceTimersByTimeAsync(200);
@@ -194,7 +201,7 @@ describe("session-native popup support", () => {
     expect(mocks.windows[0].showInactive).not.toHaveBeenCalled();
     expect(mocks.windows[0].destroyed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
-    mocks.arm.mockReturnValue(1);
+    mocks.setPolicy.mockReturnValue(true);
     expect(await initializeWaylandPopupSupport(parent())).toBe(true);
     expect(mocks.windows).toHaveLength(2);
     expect(vi.getTimerCount()).toBe(0);

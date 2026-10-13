@@ -203,28 +203,31 @@ pub fn cancel_next_window_first_cursor_enter(token: u32) -> bool {
     }
 }
 
-/// Reserve an xdg_popup role for `target_window_id` on its parent's connection.
+/// Register the intent to present `target_window_id` as an xdg_popup of
+/// `parent_window_id`, with the size the renderer measured.
 ///
-/// Only that managed window may consume the reservation. Omit anchor coordinates
-/// to use the last pointer-button position on the parent. `shadow_inset` excludes
-/// transparent client-side shadow margins from the window geometry.
-/// Returns no token when hooks or the required window/anchor/object-ID data
-/// are unavailable; callers should retry briefly, then use their overlay path.
+/// Identified by managed window id, like the layer-shell policy: the role is
+/// decided when the decorated title names the window, and everything the
+/// positioner needs (the parent's surface, the anchor, the object id) is
+/// resolved then. Omit the anchor to use the last pointer-button position on
+/// the parent. `shadow_inset` excludes transparent client-side shadow margins
+/// from the window geometry. Returns whether the intent was accepted; callers
+/// must still confirm the conversion and keep their overlay fallback.
 #[napi]
-pub fn arm_next_window_as_popup(
-    parent_window_id: String,
+pub fn set_window_popup_policy(
     target_window_id: String,
+    parent_window_id: String,
     width: i32,
     height: i32,
     anchor_x: Option<i32>,
     anchor_y: Option<i32>,
     shadow_inset: Option<i32>,
-) -> Option<u32> {
+) -> bool {
     #[cfg(target_os = "linux")]
     {
-        linux::arm_next_window_as_popup(
-            parent_window_id,
+        linux::set_popup_policy(
             target_window_id,
+            parent_window_id,
             width,
             height,
             anchor_x,
@@ -236,29 +239,29 @@ pub fn arm_next_window_as_popup(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (
-            parent_window_id,
             target_window_id,
+            parent_window_id,
             width,
             height,
             anchor_x,
             anchor_y,
             shadow_inset,
         );
-        None
+        false
     }
 }
 
-/// Cancel a popup reservation that has not yet been consumed by its target window.
+/// Withdraw a popup policy the window will not use after all.
 #[napi]
-pub fn cancel_pending_popup(token: u32) -> bool {
+pub fn clear_window_popup_policy(target_window_id: String) -> bool {
     #[cfg(target_os = "linux")]
     {
-        linux::cancel_pending_popup(token)
+        linux::clear_popup_policy(target_window_id)
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = token;
+        let _ = target_window_id;
         false
     }
 }
@@ -269,6 +272,40 @@ pub fn is_window_wayland_popup(window_id: String) -> bool {
     #[cfg(target_os = "linux")]
     {
         linux::is_window_wayland_popup(window_id)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window_id;
+        false
+    }
+}
+
+/// How long ago the most recent pointer button press landed in this window.
+///
+/// `undefined` when that press was somewhere else, or there was none. A caller
+/// can use it to tell a click that just happened here from a press that merely
+/// happened at some point in the past.
+#[napi]
+pub fn window_last_press_age_ms(window_id: String) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::window_last_press_age_ms(window_id)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window_id;
+        None
+    }
+}
+
+/// Whether a pointer is currently over this window's surface.
+#[napi]
+pub fn is_window_pointer_inside(window_id: String) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::window_pointer_inside(window_id)
     }
 
     #[cfg(not(target_os = "linux"))]

@@ -11,8 +11,8 @@ use super::super::codec::{
 };
 use super::super::layer_shell::xdg_toplevel_configure;
 use super::super::state::{
-    PopupGeometry, SurfaceRole, WaylandConn, cancel_pending_popup_for_connection,
-    cancel_pending_popup_for_parent, take_pending_popup,
+    LAST_BUTTON, PopupGeometry, PopupPolicy, SurfaceRole, WaylandConn, popup_policy,
+    take_popup_policy,
 };
 use super::{Action, Effects};
 
@@ -105,91 +105,19 @@ pub(crate) fn on_get_toplevel(
     window_id: Option<&str>,
 ) -> Action {
     if let Some(top_id) = msg.u32_arg(8) {
-        if let Some(wm_base_id) = conn.xdg_wm_base_id
-            && let Some(popup) = take_pending_popup(fd, window_id.unwrap_or(""))
+        // A window the application registered as a popup becomes one here, once
+        // the decorated title has named it. Everything the positioner needs is
+        // resolved at this point, so registering the intent could not fail for
+        // want of a parent surface or an object id.
+        if let Some(id) = window_id
+            && let Some(policy) = popup_policy(id)
+            && let Some(replacement) =
+                build_popup_role(fd, conn, msg.object_id, top_id, &policy, fx)
         {
-            let positioner_id = popup.positioner_id;
-            let geometry = PopupGeometry {
-                inset: popup.shadow_inset,
-                width: popup.width - popup.shadow_inset * 2,
-                height: popup.height - popup.shadow_inset * 2,
-            };
-            let mut replacement = Vec::with_capacity(128);
-            // xdg_wm_base.create_positioner(new_id)
-            push_message(
-                &mut replacement,
-                wm_base_id,
-                REQ_CREATE_POSITIONER,
-                &[positioner_id as i32],
-            );
-            // xdg_positioner: size, anchor rect, anchor, gravity, constraints.
-            push_message(
-                &mut replacement,
-                positioner_id,
-                REQ_POSITIONER_SET_SIZE,
-                &[geometry.width, geometry.height],
-            );
-            push_message(
-                &mut replacement,
-                positioner_id,
-                REQ_POSITIONER_SET_ANCHOR_RECT,
-                &[popup.anchor_x, popup.anchor_y, 1, 1],
-            );
-            push_message(
-                &mut replacement,
-                positioner_id,
-                REQ_POSITIONER_SET_ANCHOR,
-                &[POSITIONER_TOP_LEFT],
-            );
-            push_message(
-                &mut replacement,
-                positioner_id,
-                REQ_POSITIONER_SET_GRAVITY,
-                &[POSITIONER_BOTTOM_RIGHT],
-            );
-            push_message(
-                &mut replacement,
-                positioner_id,
-                REQ_POSITIONER_SET_CONSTRAINT_ADJUSTMENT,
-                &[POSITIONER_SLIDE_X | POSITIONER_SLIDE_Y | POSITIONER_FLIP_X | POSITIONER_FLIP_Y],
-            );
-            // xdg_surface.get_popup(new_id, parent, positioner)
-            push_message(
-                &mut replacement,
-                msg.object_id,
-                REQ_GET_POPUP,
-                &[
-                    top_id as i32,
-                    popup.parent_xdg_surface_id as i32,
-                    positioner_id as i32,
-                ],
-            );
-            push_message(&mut replacement, positioner_id, REQ_DESTROY, &[]);
-            // Position the menu itself, not the transparent shadow buffer.
-            if geometry.inset > 0 {
-                push_message(
-                    &mut replacement,
-                    msg.object_id,
-                    REQ_SET_WINDOW_GEOMETRY,
-                    &[
-                        geometry.inset,
-                        geometry.inset,
-                        geometry.width,
-                        geometry.height,
-                    ],
-                );
-                conn.popup_geometries.insert(msg.object_id, geometry);
-            }
-
-            conn.ifaces.insert(positioner_id, Iface::XdgPositioner);
-            conn.ifaces.insert(top_id, Iface::XdgPopupShim);
-            conn.top_to_xdg.insert(top_id, msg.object_id);
-            if let Some(wl_id) = conn.xdg_to_wl.get(&msg.object_id).copied() {
-                conn.wl_to_top.insert(wl_id, top_id);
-                fx.arm_watchers_for.push(wl_id);
-            }
+            take_popup_policy(id);
             return Action::Replace(vec![replacement]);
         }
+
         conn.ifaces.insert(top_id, Iface::XdgToplevel);
         conn.top_to_xdg.insert(top_id, msg.object_id);
         if let Some(wl_id) = conn.xdg_to_wl.get(&msg.object_id).copied() {
@@ -204,6 +132,127 @@ pub(crate) fn on_get_toplevel(
         }
     }
     Action::Forward
+}
+
+/// Replace `xdg_surface.get_toplevel` with the `xdg_popup` role the client's
+/// window was registered for, or `None` to leave it an ordinary toplevel.
+fn build_popup_role(
+    fd: RawFd,
+    conn: &mut WaylandConn,
+    xdg_surface_id: u32,
+    top_id: u32,
+    policy: &PopupPolicy,
+    fx: &mut Effects,
+) -> Option<Vec<u8>> {
+    let wm_base_id = conn.xdg_wm_base_id?;
+    // The parent has to be on this connection, and a layer surface cannot be an
+    // xdg_popup's xdg parent.
+    let parent_wl_surface = conn
+        .surface_ids
+        .iter()
+        .find_map(|(surface, id)| (id == &policy.parent_window_id).then_some(*surface))?;
+    if matches!(
+        conn.surface_roles.get(&parent_wl_surface),
+        Some(SurfaceRole::Layer(_))
+    ) {
+        return None;
+    }
+    let parent_xdg_surface_id = conn
+        .xdg_to_wl
+        .iter()
+        .find_map(|(xdg, wl)| (*wl == parent_wl_surface).then_some(*xdg))?;
+    let (anchor_x, anchor_y) = match policy.anchor {
+        Some(anchor) => anchor,
+        None => {
+            let button = LAST_BUTTON
+                .get()
+                .and_then(|v| v.lock().ok())
+                .and_then(|v| v.by_surface.get(&(fd, parent_wl_surface)).copied())?;
+            (button.x, button.y)
+        }
+    };
+    let positioner_id = conn.alloc_injected_id()?;
+
+    let geometry = PopupGeometry {
+        inset: policy.shadow_inset,
+        width: policy.width - policy.shadow_inset * 2,
+        height: policy.height - policy.shadow_inset * 2,
+    };
+    let mut replacement = Vec::with_capacity(128);
+    // xdg_wm_base.create_positioner(new_id)
+    push_message(
+        &mut replacement,
+        wm_base_id,
+        REQ_CREATE_POSITIONER,
+        &[positioner_id as i32],
+    );
+    // xdg_positioner: size, anchor rect, anchor, gravity, constraints.
+    push_message(
+        &mut replacement,
+        positioner_id,
+        REQ_POSITIONER_SET_SIZE,
+        &[geometry.width, geometry.height],
+    );
+    push_message(
+        &mut replacement,
+        positioner_id,
+        REQ_POSITIONER_SET_ANCHOR_RECT,
+        &[anchor_x, anchor_y, 1, 1],
+    );
+    push_message(
+        &mut replacement,
+        positioner_id,
+        REQ_POSITIONER_SET_ANCHOR,
+        &[POSITIONER_TOP_LEFT],
+    );
+    push_message(
+        &mut replacement,
+        positioner_id,
+        REQ_POSITIONER_SET_GRAVITY,
+        &[POSITIONER_BOTTOM_RIGHT],
+    );
+    push_message(
+        &mut replacement,
+        positioner_id,
+        REQ_POSITIONER_SET_CONSTRAINT_ADJUSTMENT,
+        &[POSITIONER_SLIDE_X | POSITIONER_SLIDE_Y | POSITIONER_FLIP_X | POSITIONER_FLIP_Y],
+    );
+    // xdg_surface.get_popup(new_id, parent, positioner)
+    push_message(
+        &mut replacement,
+        xdg_surface_id,
+        REQ_GET_POPUP,
+        &[
+            top_id as i32,
+            parent_xdg_surface_id as i32,
+            positioner_id as i32,
+        ],
+    );
+    push_message(&mut replacement, positioner_id, REQ_DESTROY, &[]);
+    // Position the menu itself, not the transparent shadow buffer.
+    if geometry.inset > 0 {
+        push_message(
+            &mut replacement,
+            xdg_surface_id,
+            REQ_SET_WINDOW_GEOMETRY,
+            &[
+                geometry.inset,
+                geometry.inset,
+                geometry.width,
+                geometry.height,
+            ],
+        );
+        conn.popup_geometries.insert(xdg_surface_id, geometry);
+    }
+
+    conn.ifaces.insert(positioner_id, Iface::XdgPositioner);
+    conn.ifaces.insert(top_id, Iface::XdgPopupShim);
+    conn.top_to_xdg.insert(top_id, xdg_surface_id);
+    if let Some(wl_id) = conn.xdg_to_wl.get(&xdg_surface_id).copied() {
+        conn.wl_to_top.insert(wl_id, top_id);
+        fx.arm_watchers_for.push(wl_id);
+    }
+    Some(replacement)
 }
 
 pub(crate) fn on_popup_geometry(conn: &WaylandConn, msg: &WlMessage) -> Action {
@@ -255,34 +304,13 @@ pub(crate) fn on_popup_event(conn: &mut WaylandConn, msg: &WlMessage) -> Action 
 }
 
 pub(crate) fn on_destroy(
-    fd: RawFd,
+    _fd: RawFd,
     conn: &mut WaylandConn,
     msg: &WlMessage,
     fx: &mut Effects,
 ) -> Action {
     if let Some(iface) = conn.ifaces.get(&msg.object_id).copied() {
-        if iface == Iface::XdgWmBase {
-            cancel_pending_popup_for_connection(fd, conn);
-        }
         let wl_surface_id = conn.wl_surface_for_window_object(msg.object_id, iface);
-        let parent_xdg_surface_ids: Vec<u32> = match iface {
-            Iface::WlSurface => conn
-                .xdg_to_wl
-                .iter()
-                .filter_map(|(xdg, wl)| (*wl == msg.object_id).then_some(*xdg))
-                .collect(),
-            Iface::XdgSurface => vec![msg.object_id],
-            Iface::XdgToplevel | Iface::XdgPopupShim => conn
-                .top_to_xdg
-                .get(&msg.object_id)
-                .copied()
-                .into_iter()
-                .collect(),
-            _ => Vec::new(),
-        };
-        for parent_xdg_surface_id in parent_xdg_surface_ids {
-            cancel_pending_popup_for_parent(fd, parent_xdg_surface_id, conn);
-        }
         if let Some(wl_surface_id) = wl_surface_id {
             fx.destroyed_surfaces.push(wl_surface_id);
         }
@@ -374,26 +402,26 @@ mod popup_shadow_tests {
     fn positioner_uses_content_size_and_preserves_the_anchor() {
         use super::super::super::{
             codec::{REQ_GET_TOPLEVEL, decode},
-            state::{self, PENDING_POPUPS, PendingPopup},
+            state,
         };
         state::init_state();
         let fd = 94_101;
-        PENDING_POPUPS.get().unwrap().lock().unwrap().insert(
+        state::clear_runtime_state_for_fd(fd);
+        state::insert_popup_policy_for_test(
             fd,
-            PendingPopup {
-                token: 101,
-                parent_xdg_surface_id: 20,
-                width: 280,
-                height: 329,
-                shadow_inset: 24,
-                anchor_x: 70,
-                anchor_y: 80,
-                positioner_id: 900,
-                target_window_id: "shadow-menu".into(),
-            },
+            "shadow-menu",
+            "shadow-parent",
+            280,
+            329,
+            24,
+            Some((70, 80)),
         );
         let mut conn = WaylandConn::new();
         conn.xdg_wm_base_id = Some(2);
+        // The parent the policy names has to be resolvable on this connection.
+        conn.surface_ids.insert(20, "shadow-parent".into());
+        conn.xdg_to_wl.insert(19, 20);
+        conn.stolen_ids.push(900);
         let msg = WlMessage::new(
             40,
             REQ_GET_TOPLEVEL,
