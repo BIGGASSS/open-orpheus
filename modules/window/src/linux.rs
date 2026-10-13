@@ -78,17 +78,38 @@ pub fn is_layer_shell_available() -> bool {
     wayland::is_layer_shell_available()
 }
 
-/// Declare layer-shell state before a window's surface takes its role.
+/// Register the layer-shell policy for a managed window.
 ///
-/// A named declaration is consumed only by that managed window; an unnamed
-/// declaration applies to the next eligible toplevel. Invalid options are
-/// refused here because a protocol error would close the display connection.
-pub fn declare_layer_window(options: &crate::LayerShellOptions, owner: Option<String>) -> bool {
+/// Keyed by the id the application names the window with, so it can be set
+/// before the window — or its surface — exists. Invalid options are refused
+/// here because a protocol error would close the display connection.
+pub fn set_layer_policy(window_id: &str, options: &crate::LayerShellOptions) -> bool {
     if disable_display_server_hooks() {
         return false;
     }
 
-    wayland::declare_layer_window(to_wayland_options(options), owner)
+    wayland::set_layer_policy(window_id, to_wayland_options(options))
+}
+
+/// Withdraw the layer-shell policy for a managed window.
+///
+/// A surface that already took the layer role keeps it for its life; only the
+/// window's next surface is affected.
+pub fn clear_layer_policy(window_id: &str) -> bool {
+    wayland::clear_layer_policy(window_id)
+}
+
+/// Re-key the native state recorded for one managed window under another.
+///
+/// A policy switch replaces the wrapper with a different window id; the
+/// layer-shell policy and the recorded input region follow it.
+pub fn transfer_window_state(from_id: &str, to_id: &str) -> bool {
+    wayland::transfer_window_state(from_id, to_id)
+}
+
+/// Release the native state recorded for a window that will not return.
+pub fn forget_window_state(window_id: &str) -> bool {
+    wayland::forget_window_state(window_id)
 }
 
 /// Decorate a title with the managed window id the proxy keys windows on.
@@ -142,12 +163,6 @@ fn to_wayland_options(options: &crate::LayerShellOptions) -> wayland::LayerShell
             .keyboard_interactivity
             .unwrap_or(wayland::KEYBOARD_NONE),
     }
-}
-
-/// Withdraw the newest pending declaration for `owner`, or the newest unnamed
-/// declaration when no owner is provided.
-pub fn cancel_layer_window(owner: Option<&str>) -> bool {
-    wayland::cancel_layer_window(owner)
 }
 
 #[napi]

@@ -1,4 +1,7 @@
-use std::os::fd::RawFd;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::linux::Rect;
 
@@ -6,117 +9,215 @@ use super::super::proxy::sink_for;
 use super::codec::*;
 use super::state::*;
 
-fn window_id_to_fd_and_surface(window_id: &str) -> Option<(RawFd, u32)> {
-    if let Some(m) = CUSTOM_ID_MAP.get()
-        && let Ok(map) = m.lock()
-        && let Some(&val) = map.get(window_id)
-    {
-        return Some(val);
-    }
-    None
+/// `wl_compositor.create_region(new_id)`.
+fn create_region_request(compositor_id: u32, region_id: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(12);
+    buf.extend_from_slice(&compositor_id.to_ne_bytes());
+    buf.extend_from_slice(&((REQ_CREATE_REGION as u32) | (12u32 << 16)).to_ne_bytes());
+    buf.extend_from_slice(&region_id.to_ne_bytes());
+    buf
 }
 
-fn create_region(fd: RawFd) -> Option<u32> {
-    let (compositor_id, region_id) = {
-        let conns = CONNS.get()?;
-        let Ok(mut guard) = conns.lock() else {
-            return None;
-        };
-        let conn = guard.get_mut(&fd)?;
-        let compositor_id = conn.compositor_id?;
-        let region_id = conn.alloc_injected_id()?;
-        (compositor_id, region_id)
-    };
-
-    let hdr_word = (REQ_CREATE_REGION as u32) | (12u32 << 16);
-    let mut buf = [0u8; 12];
-    buf[0..4].copy_from_slice(&compositor_id.to_ne_bytes());
-    buf[4..8].copy_from_slice(&hdr_word.to_ne_bytes());
-    buf[8..12].copy_from_slice(&region_id.to_ne_bytes());
-
-    let sink = sink_for(fd)?;
-    if !sink.send_as_client(&buf) {
-        let conns = CONNS.get()?;
-        let Ok(mut guard) = conns.lock() else {
-            return None;
-        };
-        if let Some(conn) = guard.get_mut(&fd) {
-            conn.injected_ids.remove(&region_id);
-            // Return it to the pool if we failed to send
-            conn.stolen_ids.push(region_id);
-        }
-        return None;
-    }
-
-    Some(region_id)
+/// `wl_region.add(x, y, w, h)`.
+fn region_add_request(region_id: u32, rect: &Rect) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(24);
+    buf.extend_from_slice(&region_id.to_ne_bytes());
+    buf.extend_from_slice(&((REQ_REGION_ADD as u32) | (24u32 << 16)).to_ne_bytes());
+    buf.extend_from_slice(&rect.x.to_ne_bytes());
+    buf.extend_from_slice(&rect.y.to_ne_bytes());
+    buf.extend_from_slice(&rect.w.to_ne_bytes());
+    buf.extend_from_slice(&rect.h.to_ne_bytes());
+    buf
 }
 
-fn region_add(fd: RawFd, region_id: u32, x: i32, y: i32, w: i32, h: i32) -> bool {
-    let hdr_word = (REQ_REGION_ADD as u32) | (24u32 << 16);
-    let mut buf = [0u8; 24];
-    buf[0..4].copy_from_slice(&region_id.to_ne_bytes());
-    buf[4..8].copy_from_slice(&hdr_word.to_ne_bytes());
-    buf[8..12].copy_from_slice(&x.to_ne_bytes());
-    buf[12..16].copy_from_slice(&y.to_ne_bytes());
-    buf[16..20].copy_from_slice(&w.to_ne_bytes());
-    buf[20..24].copy_from_slice(&h.to_ne_bytes());
-
-    let Some(sink) = sink_for(fd) else {
-        return false;
-    };
-    sink.send_as_client(&buf)
+/// `wl_surface.set_input_region(region)`; region `0` is the empty region, which
+/// needs no object and is how a click-through window is expressed.
+fn set_input_region_request(wl_surface_id: u32, region_id: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(12);
+    buf.extend_from_slice(&wl_surface_id.to_ne_bytes());
+    buf.extend_from_slice(&((REQ_SET_INPUT_REGION as u32) | (12u32 << 16)).to_ne_bytes());
+    buf.extend_from_slice(&region_id.to_ne_bytes());
+    buf
 }
 
-fn destroy_injected_region(fd: RawFd, region_id: u32) {
-    let hdr_word = (REQ_REGION_DESTROY as u32) | (8u32 << 16);
-    let mut buf = [0u8; 8];
-    buf[0..4].copy_from_slice(&region_id.to_ne_bytes());
-    buf[4..8].copy_from_slice(&hdr_word.to_ne_bytes());
-
-    if let Some(sink) = sink_for(fd) {
-        sink.send_as_client(&buf);
-    }
+/// `wl_region.destroy()`.
+fn destroy_region_request(region_id: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8);
+    buf.extend_from_slice(&region_id.to_ne_bytes());
+    buf.extend_from_slice(&((REQ_REGION_DESTROY as u32) | (8u32 << 16)).to_ne_bytes());
+    buf
 }
 
-pub(super) fn set_input_region_rects(window_id: &str, rects: Option<&[Rect]>) -> bool {
-    let (fd, wl_surface_id) = match window_id_to_fd_and_surface(window_id) {
-        Some(v) => v,
-        None => return false,
-    };
-
+/// Build the requests that give `wl_surface_id` a region, in wire order.
+///
+/// `None` when the region object cannot be created for want of a recycled
+/// object id; the caller keeps the record pending so a later commit tries again.
+fn build_region_requests(
+    conn: &mut WaylandConn,
+    wl_surface_id: u32,
+    rects: Option<&[Rect]>,
+) -> Option<Vec<Vec<u8>>> {
+    let mut requests = Vec::new();
     let mut region_id = 0;
 
     if let Some(rects) = rects {
-        if let Some(r_id) = create_region(fd) {
-            region_id = r_id;
-            for r in rects {
-                if !region_add(fd, region_id, r.x, r.y, r.w, r.h) {
-                    destroy_injected_region(fd, region_id);
-                    return false;
-                }
-            }
-        } else {
-            return false;
+        let compositor_id = conn.compositor_id?;
+        region_id = conn.alloc_injected_id()?;
+        requests.push(create_region_request(compositor_id, region_id));
+        for rect in rects {
+            requests.push(region_add_request(region_id, rect));
         }
     }
 
-    let hdr_word = (REQ_SET_INPUT_REGION as u32) | (12u32 << 16);
-    let mut buf = [0u8; 12];
-    buf[0..4].copy_from_slice(&wl_surface_id.to_ne_bytes());
-    buf[4..8].copy_from_slice(&hdr_word.to_ne_bytes());
-    buf[8..12].copy_from_slice(&region_id.to_ne_bytes()); // "0" acts safely as null identifier
-
-    let Some(sink) = sink_for(fd) else {
-        return false;
-    };
-    let res = sink.send_as_client(&buf);
-
+    // The surface takes the region before the object is released; the compositor
+    // keeps its own reference.
+    requests.push(set_input_region_request(wl_surface_id, region_id));
     if region_id != 0 {
-        // Drop cache proxy directly. Re-allocation operates identically upon delete_id.
-        destroy_injected_region(fd, region_id);
+        requests.push(destroy_region_request(region_id));
+    }
+    Some(requests)
+}
+
+/// The requests that put `window_id`'s recorded region on `wl_surface_id`, or
+/// `None` when it has nothing pending.
+///
+/// Called while dispatching the client's `commit`, so the requests are emitted
+/// immediately before it: a `set_input_region` is only adopted by the
+/// compositor at the commit that follows it, and emitting it afterwards would
+/// leave the window on its previous region until something committed again.
+/// Returning the bytes rather than sending them keeps the proxy from writing
+/// into the connection while the application thread might be blocked on a full
+/// socketpair.
+pub(super) fn region_requests_for_commit(
+    conn: &mut WaylandConn,
+    wl_surface_id: u32,
+) -> Option<Vec<Vec<u8>>> {
+    let window_id = conn.surface_ids.get(&wl_surface_id)?.clone();
+
+    // The application thread stores regions; this thread reads and clears the
+    // pending one. Holding the lock across both keeps a store from landing in
+    // between and being forgotten.
+    let _guard = INPUT_REGION_LOCK.lock().ok()?;
+
+    let mut regions = recorded_input_regions().lock().ok()?;
+    let region = regions.get_mut(&window_id)?;
+    if !region.pending {
+        return None;
     }
 
-    res
+    let requests = build_region_requests(conn, wl_surface_id, region.rects.as_deref())?;
+    region.pending = false;
+    Some(requests)
+}
+
+/// Mark a window's recorded region as needing a send, so its surface's next
+/// `commit` carries it.
+///
+/// The id is attached to its surface at the decorated title; a surface that is
+/// re-created for the same window (an on-demand window being shown again) is a
+/// new surface, so it needs the region again.
+pub(super) fn mark_region_pending(window_id: &str) {
+    if let Ok(_guard) = INPUT_REGION_LOCK.lock()
+        && let Ok(mut regions) = recorded_input_regions().lock()
+        && let Some(region) = regions.get_mut(window_id)
+    {
+        region.pending = true;
+    }
+}
+
+/// What the proxy remembers for a window's input region.
+struct RecordedRegion {
+    /// `None` is an explicitly empty region — a fully click-through window.
+    rects: Option<Vec<Rect>>,
+    /// The region still has to be emitted before a commit on the window's
+    /// surface. Cleared only once its requests have been placed on the wire, so
+    /// a region that could not be built is not mistaken for an applied one.
+    pending: bool,
+}
+
+/// The input region each managed window asked for, keyed by window id.
+///
+/// Recorded even when the surface is not known yet, so it can be applied when
+/// the decorated title associates the id with a surface. An absent key means
+/// the window never asked for one.
+static RECORDED_INPUT_REGIONS: OnceLock<Mutex<HashMap<String, RecordedRegion>>> = OnceLock::new();
+
+/// Serializes reading and clearing a recorded region against storing one.
+///
+/// The proxy thread drains a pending region while dispatching a commit, and the
+/// application thread can store a new one at the same time. Without this, the
+/// drain could emit an older region after the application had stored a newer
+/// one. It is held only across in-memory work — no write, and no wait on the
+/// connection — and the registry lock is only ever taken inside it.
+static INPUT_REGION_LOCK: Mutex<()> = Mutex::new(());
+
+fn recorded_input_regions() -> &'static Mutex<HashMap<String, RecordedRegion>> {
+    RECORDED_INPUT_REGIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record a window's input region.
+///
+/// Nothing is sent here: the region is emitted immediately before the next
+/// `commit` on the window's surface, because that commit is what makes the
+/// compositor adopt it. The caller is told "recorded", not "already in effect".
+pub(super) fn set_input_region_rects(window_id: &str, rects: Option<&[Rect]>) -> bool {
+    let Ok(_guard) = INPUT_REGION_LOCK.lock() else {
+        return false;
+    };
+    let Ok(mut regions) = recorded_input_regions().lock() else {
+        return false;
+    };
+    regions.insert(
+        window_id.to_string(),
+        RecordedRegion {
+            rects: rects.map(|rects| rects.to_vec()),
+            pending: true,
+        },
+    );
+    true
+}
+
+/// Forget the region recorded for a window that will not come back.
+///
+/// `set_input_region_rects` keeps the record so a window can hide and re-create
+/// its surface; this is the release path for a wrapper that is discarded for
+/// good, so the map does not grow with every temporary window.
+pub(super) fn forget_input_region(window_id: &str) -> bool {
+    let Ok(_guard) = INPUT_REGION_LOCK.lock() else {
+        return false;
+    };
+    RECORDED_INPUT_REGIONS
+        .get()
+        .and_then(|regions| regions.lock().ok()?.remove(window_id))
+        .is_some()
+}
+
+/// Re-key a window's recorded input region under another window id.
+///
+/// A policy switch replaces the wrapper with a different window; the region
+/// follows it and is emitted before the replacement's next commit. Returns
+/// whether the registry was reachable; a window with no recorded region is a
+/// no-op, not a failure.
+pub(super) fn transfer_input_region(from_id: &str, to_id: &str) -> bool {
+    if from_id == to_id {
+        return true;
+    }
+    let Ok(_guard) = INPUT_REGION_LOCK.lock() else {
+        return false;
+    };
+    let Some(registry) = RECORDED_INPUT_REGIONS.get() else {
+        return true;
+    };
+    let Ok(mut regions) = registry.lock() else {
+        return false;
+    };
+    let Some(mut region) = regions.remove(from_id) else {
+        return true;
+    };
+    // The replacement's surface has not seen it, whatever the source had.
+    region.pending = true;
+    regions.insert(to_id.to_string(), region);
+    true
 }
 
 pub(super) fn send_xdg_toplevel_move() -> bool {
@@ -192,26 +293,26 @@ pub(super) fn send_xdg_toplevel_move() -> bool {
 mod tests {
     use std::io::Read;
     use std::os::fd::AsRawFd;
+    use std::os::fd::RawFd;
     use std::os::unix::net::UnixStream;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use crate::linux::Rect;
     use crate::linux::proxy::{SINKS, Sink};
 
-    use super::super::test_support::request;
+    use super::super::handlers::{Action, Effects, dispatch_request};
+    use super::super::test_support::{request, serial};
     use super::*;
 
     const WINDOW: &str = "window-1";
 
     /// The injection path reads two process-global registries: `LAST_BUTTON` and
-    /// `CUSTOM_ID_MAP` (under the shared `WINDOW` key). Tests therefore run one
-    /// at a time rather than fighting over them.
-    static PRESS_STATE: Mutex<()> = Mutex::new(());
-
+    /// the connection's surface map (`CONNS`, under the shared `WINDOW` key),
+    /// so it takes the one test mutex every global-touching module shares.
     fn lock_press_state() -> MutexGuard<'static, ()> {
-        PRESS_STATE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        serial()
     }
 
     /// A connection the proxy can inject into. Injected bytes are written to the
@@ -275,20 +376,21 @@ mod tests {
         }
 
         fn with_custom_id(&self, wl_surface_id: u32) -> &Self {
-            CUSTOM_ID_MAP
-                .get()
-                .expect("initialised")
-                .lock()
-                .unwrap()
-                .insert(WINDOW.to_string(), (self.fd, wl_surface_id));
+            self.with_conn(|conn| {
+                conn.surface_ids.insert(wl_surface_id, WINDOW.to_string());
+            });
             self
         }
 
         fn with_conn(&self, edit: impl FnOnce(&mut WaylandConn)) -> &Self {
+            self.with_conn_ref(edit);
+            self
+        }
+
+        fn with_conn_ref<T>(&self, read: impl FnOnce(&mut WaylandConn) -> T) -> T {
             let map = CONNS.get().expect("initialised");
             let mut guard = map.lock().unwrap();
-            edit(guard.get_mut(&self.fd).expect("a connection"));
-            self
+            read(guard.get_mut(&self.fd).expect("a connection"))
         }
 
         /// Everything the proxy injected, in order.
@@ -309,31 +411,26 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.forget();
-            if let Some(m) = CUSTOM_ID_MAP.get() {
-                m.lock().unwrap().remove(WINDOW);
-            }
         }
     }
 
     #[test]
-    fn clearing_the_input_region_sends_only_the_surface_request() {
+    fn recording_a_region_sends_nothing_by_itself() {
         let _serial = lock_press_state();
         let mut fixture = Fixture::new();
         fixture.with_connection();
 
         assert!(set_input_region_rects(WINDOW, None));
 
-        assert_eq!(
-            fixture.injected(),
-            request(7, REQ_SET_INPUT_REGION, 12, &[0]),
-            "a null region clears the input region"
-        );
+        // It is emitted immediately before the surface's next commit, because
+        // that commit is what makes the compositor adopt it.
+        assert!(fixture.injected().is_empty());
     }
 
     #[test]
-    fn setting_rects_creates_populates_assigns_and_releases_the_region() {
+    fn a_commit_carries_the_region_before_itself() {
         let _serial = lock_press_state();
-        let mut fixture = Fixture::new();
+        let fixture = Fixture::new();
         fixture.with_connection();
         let rects = [
             Rect {
@@ -349,18 +446,21 @@ mod tests {
                 h: 8,
             },
         ];
-
         assert!(set_input_region_rects(WINDOW, Some(&rects)));
 
-        let expected: Vec<u8> = [
-            request(3, REQ_CREATE_REGION, 12, &[50]),
-            request(50, REQ_REGION_ADD, 24, &[1, 2, 3, 4]),
-            request(50, REQ_REGION_ADD, 24, &[5, 6, 7, 8]),
-            request(7, REQ_SET_INPUT_REGION, 12, &[50]),
-            request(50, REQ_REGION_DESTROY, 8, &[]),
-        ]
-        .concat();
-        assert_eq!(fixture.injected(), expected);
+        let requests = fixture
+            .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+            .expect("the region is pending");
+        assert_eq!(
+            requests,
+            vec![
+                request(3, REQ_CREATE_REGION, 12, &[50]),
+                request(50, REQ_REGION_ADD, 24, &[1, 2, 3, 4]),
+                request(50, REQ_REGION_ADD, 24, &[5, 6, 7, 8]),
+                request(7, REQ_SET_INPUT_REGION, 12, &[50]),
+                request(50, REQ_REGION_DESTROY, 8, &[]),
+            ]
+        );
 
         // The id came from the recycled pool and stays owned until the
         // compositor reports it deleted.
@@ -371,20 +471,202 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_window_id_injects_nothing() {
+    fn a_commit_emits_the_region_before_the_commit_itself() {
         let _serial = lock_press_state();
-        let mut fixture = Fixture::new();
+        let fixture = Fixture::new();
         fixture.with_connection();
+        // The surface the commit names, as `create_surface` would have recorded.
+        fixture.with_conn(|conn| {
+            conn.ifaces.insert(7, Iface::WlSurface);
+        });
+        assert!(set_input_region_rects(WINDOW, None));
 
-        assert!(!set_input_region_rects("window-unknown", None));
+        let commit = WlMessage::new(7, REQ_COMMIT, request(7, REQ_COMMIT, 8, &[]));
+        let action = fixture.with_conn_ref(|conn| {
+            dispatch_request(fixture.fd, conn, &commit, &mut Effects::default())
+        });
 
-        assert!(fixture.injected().is_empty());
+        let Action::Replace(messages) = action else {
+            panic!("a commit with a pending region is emitted with it");
+        };
+        assert_eq!(
+            messages,
+            vec![
+                request(7, REQ_SET_INPUT_REGION, 12, &[0]),
+                commit.raw().to_vec(),
+            ],
+            "the region precedes the commit that adopts it"
+        );
+    }
+
+    #[test]
+    fn an_unknown_surface_is_left_alone() {
+        let _serial = lock_press_state();
+        let fixture = Fixture::new();
+        fixture.with_connection();
+        assert!(set_input_region_rects(WINDOW, None));
+
+        assert!(
+            fixture
+                .with_conn_ref(|conn| {
+                    conn.surface_ids.clear();
+                    region_requests_for_commit(conn, 7)
+                })
+                .is_none(),
+            "an id the proxy cannot name has no region to emit"
+        );
+    }
+
+    #[test]
+    fn a_region_is_emitted_once_per_surface() {
+        let _serial = lock_press_state();
+        let fixture = Fixture::new();
+        fixture.with_connection();
+        assert!(set_input_region_rects(WINDOW, None));
+
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_some()
+        );
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_none(),
+            "the commit already carried it"
+        );
+
+        // A surface re-created for the same window is a new surface, so the
+        // region has to reach it again.
+        mark_region_pending(WINDOW);
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_region_without_a_spare_id_stays_pending() {
+        let _serial = lock_press_state();
+        let fixture = Fixture::new();
+        fixture.with_connection();
+        // No recycled id, so the region object cannot be built.
+        fixture.with_conn(|conn| conn.stolen_ids.clear());
+        let rects = [Rect {
+            x: 1,
+            y: 2,
+            w: 3,
+            h: 4,
+        }];
+        assert!(set_input_region_rects(WINDOW, Some(&rects)));
+
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_none(),
+            "the commit is not made to carry a region that is not ready"
+        );
+
+        // An id comes back; the next commit carries it.
+        fixture.with_conn(|conn| conn.stolen_ids.push(50));
+        assert_eq!(
+            fixture.with_conn_ref(|conn| region_requests_for_commit(conn, 7)),
+            Some(vec![
+                request(3, REQ_CREATE_REGION, 12, &[50]),
+                request(50, REQ_REGION_ADD, 24, &[1, 2, 3, 4]),
+                request(7, REQ_SET_INPUT_REGION, 12, &[50]),
+                request(50, REQ_REGION_DESTROY, 8, &[]),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_region_store_cannot_overtake_a_drain_in_flight() {
+        let _serial = lock_press_state();
+
+        // Held, as the proxy thread does while it reads a pending region and
+        // clears it. A store arriving now must wait, so the drain cannot emit
+        // the older region after the application has recorded a newer one.
+        let guard = INPUT_REGION_LOCK.lock().expect("uncontended");
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let store = std::thread::spawn(move || {
+            started_tx.send(()).expect("signalled");
+            set_input_region_rects("serialized-window", None);
+            done_tx.send(()).expect("signalled");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the storing thread started");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the store must not overtake a drain that is already reading"
+        );
+
+        drop(guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the store completed once the drain ended");
+        store.join().expect("joined");
+        forget_input_region("serialized-window");
+    }
+
+    #[test]
+    fn a_discarded_window_can_release_its_recorded_region() {
+        let _serial = lock_press_state();
+        let fixture = Fixture::new();
+        fixture.with_connection();
+        assert!(set_input_region_rects(WINDOW, None));
+
+        assert!(forget_input_region(WINDOW));
+
+        // The record is gone, so no commit can emit a region for it.
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_none()
+        );
+        assert!(!forget_input_region(WINDOW), "forgetting twice is a no-op");
+    }
+
+    #[test]
+    fn a_recorded_region_follows_its_window_to_a_replacement_id() {
+        let _serial = lock_press_state();
+        let fixture = Fixture::new();
+        fixture.with_connection();
+        fixture.with_conn(|conn| conn.surface_ids.clear());
+
+        assert!(set_input_region_rects("source-window", None));
+        assert!(transfer_input_region("source-window", "replacement-window"));
+
+        // The replacement is not associated with a surface yet.
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_none()
+        );
+
+        // Once it names the surface, the next commit carries the region.
+        fixture.with_conn(|conn| {
+            conn.surface_ids.insert(7, "replacement-window".to_string());
+        });
+        assert_eq!(
+            fixture.with_conn_ref(|conn| region_requests_for_commit(conn, 7)),
+            Some(vec![request(7, REQ_SET_INPUT_REGION, 12, &[0])])
+        );
+
+        // A window with nothing recorded, and a no-op transfer, are both fine.
+        assert!(transfer_input_region("nothing-recorded", "elsewhere"));
+        assert!(transfer_input_region("same-window", "same-window"));
     }
 
     #[test]
     fn a_region_needs_a_compositor() {
         let _serial = lock_press_state();
-        let mut fixture = Fixture::new();
+        let fixture = Fixture::new();
         fixture.with_connection();
         fixture.with_conn(|conn| conn.compositor_id = None);
         let rects = [Rect {
@@ -394,34 +676,22 @@ mod tests {
             h: 4,
         }];
 
-        assert!(!set_input_region_rects(WINDOW, Some(&rects)));
+        // The region is recorded either way; a compositor is only needed to
+        // build its requests.
+        assert!(set_input_region_rects(WINDOW, Some(&rects)));
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_none()
+        );
 
-        assert!(fixture.injected().is_empty());
-    }
-
-    #[test]
-    fn a_failed_injection_returns_the_id_to_the_pool() {
-        let _serial = lock_press_state();
-        let fixture = Fixture::new();
-        fixture.with_connection();
-
-        // Point the sink at a descriptor that can never be valid, so the send
-        // fails the way it would if the client had gone away. Closing a socket
-        // here would free its number for a concurrent test to reallocate.
-        fixture.install_sink(-1);
-
-        let rects = [Rect {
-            x: 1,
-            y: 2,
-            w: 3,
-            h: 4,
-        }];
-        assert!(!set_input_region_rects(WINDOW, Some(&rects)));
-
-        fixture.with_conn(|conn| {
-            assert!(!conn.injected_ids.contains(&50), "the id is not owned");
-            assert_eq!(conn.stolen_ids, vec![50], "it went back to the pool");
-        });
+        // It is not forgotten: once a compositor is known, a commit carries it.
+        fixture.with_conn(|conn| conn.compositor_id = Some(3));
+        assert!(
+            fixture
+                .with_conn_ref(|conn| region_requests_for_commit(conn, 7))
+                .is_some()
+        );
     }
 
     #[test]

@@ -1,11 +1,21 @@
-//! Wire-format helpers shared by the Wayland test modules.
+//! Wire-format helpers and fixtures shared by the Wayland test modules.
 //!
-//! Every module that drives the pipeline needs to encode Wayland messages, and
-//! until now each carried its own copy of the encoder — which is how the same
-//! size-field bug had to be fixed twice. The encoders live here now, named by
-//! what they are for, so the wire format is written down once.
+//! Every module that drives the pipeline needs to encode Wayland messages and
+//! inspect the ones production emitted, and the modules that touch the
+//! process-global policy map need the same connection and the same lock. Until
+//! now each carried its own copy — which is how the same size-field bug had to
+//! be fixed twice. Both live here, named by what they are for, so the wire
+//! format and the fixtures are written down once.
 
-use super::codec::WlMessage;
+use std::os::fd::RawFd;
+use std::sync::{Mutex, MutexGuard};
+
+use super::codec::{Iface, WlMessage};
+use super::handlers::Action;
+use super::layer_shell::{
+    ANCHOR_BOTTOM, ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_TOP, LAYER_OVERLAY, LayerShellOptions,
+};
+use super::state::{CONNS, WaylandConn};
 
 /// Round `len` up to the next multiple of 4, the Wayland word size.
 pub(crate) fn padded_len(len: usize) -> usize {
@@ -15,7 +25,7 @@ pub(crate) fn padded_len(len: usize) -> usize {
 /// An 8-byte header whose size field claims `size` **bytes**.
 ///
 /// Bytes, not 4-byte units: that is X11's convention, not Wayland's.
-pub(crate) fn header(object_id: u32, opcode: u16, size: usize) -> [u8; 8] {
+pub(crate) fn header_bytes(object_id: u32, opcode: u16, size: usize) -> [u8; 8] {
     let mut buf = [0u8; 8];
     buf[..4].copy_from_slice(&object_id.to_ne_bytes());
     buf[4..].copy_from_slice(&(((size as u32) << 16) | opcode as u32).to_ne_bytes());
@@ -28,7 +38,7 @@ pub(crate) fn message_bytes(object_id: u32, opcode: u16, args: &[u8]) -> Vec<u8>
     // before the header can be written.
     let len = padded_len(8 + args.len());
     let mut buf = Vec::with_capacity(len);
-    buf.extend_from_slice(&header(object_id, opcode, len));
+    buf.extend_from_slice(&header_bytes(object_id, opcode, len));
     buf.extend_from_slice(args);
     buf.resize(len, 0);
     buf
@@ -42,7 +52,7 @@ pub(crate) fn message(object_id: u32, opcode: u16, args: &[u8]) -> WlMessage {
 /// A message whose header claims `size` bytes and whose buffer is exactly that
 /// long — including sizes no real message may use, which is the point.
 pub(crate) fn declared_message(object_id: u32, opcode: u16, size: usize) -> Vec<u8> {
-    let mut buf = header(object_id, opcode, size).to_vec();
+    let mut buf = header_bytes(object_id, opcode, size).to_vec();
     buf.resize(size, 0);
     buf
 }
@@ -52,7 +62,7 @@ pub(crate) fn declared_message(object_id: u32, opcode: u16, size: usize) -> Vec<
 /// expectation before the code under test reads the header.
 pub(crate) fn request(object_id: u32, opcode: u16, size: usize, args: &[u32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(size);
-    buf.extend_from_slice(&header(object_id, opcode, size));
+    buf.extend_from_slice(&header_bytes(object_id, opcode, size));
     for arg in args {
         buf.extend_from_slice(&arg.to_ne_bytes());
     }
@@ -74,6 +84,116 @@ pub(crate) fn wl_string(text: &str) -> Vec<u8> {
     buf.extend_from_slice(&body);
     buf.resize(padded_len(buf.len()), 0);
     buf
+}
+
+// ── Message inspection ─────────────────────────────────────────────────────
+
+/// Decode a complete message's header as `(object_id, opcode, size)`.
+///
+/// [`header_bytes`] writes the header; this is the read side the tests use to
+/// check what production emitted without hard-coding offsets.
+pub(crate) fn header(buf: &[u8]) -> (u32, u16, usize) {
+    let packed = u32::from_ne_bytes(buf[4..8].try_into().unwrap());
+    (
+        u32::from_ne_bytes(buf[0..4].try_into().unwrap()),
+        (packed & 0xFFFF) as u16,
+        (packed >> 16) as usize,
+    )
+}
+
+/// The 32-bit argument at `offset` in a message body.
+pub(crate) fn u32_at(buf: &[u8], offset: usize) -> u32 {
+    u32::from_ne_bytes(buf[offset..offset + 4].try_into().unwrap())
+}
+
+/// The messages an [`Action::Replace`] carries, panicking for any other action.
+pub(crate) fn replaced(action: Action) -> Vec<Vec<u8>> {
+    match action {
+        Action::Replace(messages) => messages,
+        _ => panic!("expected a replacement"),
+    }
+}
+
+// ── Shared fixtures ────────────────────────────────────────────────────────
+//
+// The policy map, the popup reservations and the connection registry are all
+// process-global, so every module that touches them has to build the same
+// connection and serialize against the others.
+
+/// The canonical test options: an overlay covering the whole output.
+pub(crate) fn options() -> LayerShellOptions {
+    LayerShellOptions {
+        namespace: "open-orpheus-test".into(),
+        layer: LAYER_OVERLAY,
+        anchor: ANCHOR_TOP | ANCHOR_BOTTOM | ANCHOR_LEFT | ANCHOR_RIGHT,
+        ..Default::default()
+    }
+}
+
+/// A connection that has seen a compositor, an xdg_surface and one spare id.
+pub(crate) fn connected() -> WaylandConn {
+    let mut conn = WaylandConn::new();
+    conn.registry_id = Some(5);
+    conn.ifaces.insert(5, Iface::WlRegistry);
+    conn.layer_shell_global = Some((63, 5));
+    conn.ifaces.insert(10, Iface::WlSurface);
+    conn.ifaces.insert(20, Iface::XdgSurface);
+    conn.xdg_to_wl.insert(20, 10);
+    conn.stolen_ids.push(50);
+    conn
+}
+
+/// One test mutex for every module that touches the process-global state.
+///
+/// It is deliberately poison-tolerant: a failure in one case must not turn
+/// every later case into a `PoisonError`.
+pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
+
+/// [`SERIAL`] as the guard the fixtures hand out.
+pub(crate) fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// [`serial`] plus a fresh state and no layer policies.
+pub(crate) fn fixture() -> (MutexGuard<'static, ()>, WaylandConn) {
+    let guard = serial();
+    super::state::init_state();
+    super::state::clear_all_layer_policies();
+    (guard, connected())
+}
+
+/// A connection registered in the process-wide map, the way production
+/// registers one, so availability can be derived from it.
+pub(crate) struct Registered(RawFd);
+
+impl Registered {
+    pub(crate) fn new(fd: RawFd, conn: WaylandConn) -> Self {
+        CONNS
+            .get()
+            .expect("initialised")
+            .lock()
+            .unwrap()
+            .insert(fd, conn);
+        Self(fd)
+    }
+
+    pub(crate) fn with<T>(&self, edit: impl FnOnce(&mut WaylandConn) -> T) -> T {
+        let conns = CONNS.get().expect("initialised");
+        let mut map = conns.lock().unwrap();
+        edit(map.get_mut(&self.0).expect("registered"))
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        if let Some(conns) = CONNS.get()
+            && let Ok(mut map) = conns.lock()
+        {
+            map.remove(&self.0);
+        }
+    }
 }
 
 #[cfg(test)]

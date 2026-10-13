@@ -11,7 +11,7 @@ use super::super::codec::{
 };
 use super::super::layer_shell::xdg_toplevel_configure;
 use super::super::state::{
-    CUSTOM_ID_MAP, PopupGeometry, WaylandConn, cancel_pending_popup_for_connection,
+    PopupGeometry, SurfaceRole, WaylandConn, cancel_pending_popup_for_connection,
     cancel_pending_popup_for_parent, take_pending_popup,
 };
 use super::{Action, Effects};
@@ -102,11 +102,11 @@ pub(crate) fn on_get_toplevel(
     conn: &mut WaylandConn,
     msg: &WlMessage,
     fx: &mut Effects,
+    window_id: Option<&str>,
 ) -> Action {
     if let Some(top_id) = msg.u32_arg(8) {
         if let Some(wm_base_id) = conn.xdg_wm_base_id
-            && let Some(popup) =
-                take_pending_popup(fd, conn.role_window_id.as_deref().unwrap_or(""))
+            && let Some(popup) = take_pending_popup(fd, window_id.unwrap_or(""))
         {
             let positioner_id = popup.positioner_id;
             let geometry = PopupGeometry {
@@ -195,8 +195,11 @@ pub(crate) fn on_get_toplevel(
         if let Some(wl_id) = conn.xdg_to_wl.get(&msg.object_id).copied() {
             conn.wl_to_top.insert(wl_id, top_id);
             // The surface is a toplevel for good: a compositor never releases
-            // the role, so it can never become a layer surface.
-            conn.toplevel_surfaces.insert(wl_id);
+            // the role, so it can never become a layer surface. Keep any
+            // refusal already reported for it.
+            conn.surface_roles
+                .entry(wl_id)
+                .or_insert(SurfaceRole::Toplevel { reported: false });
             fx.arm_watchers_for.push(wl_id);
         }
     }
@@ -282,11 +285,6 @@ pub(crate) fn on_destroy(
         }
         if let Some(wl_surface_id) = wl_surface_id {
             fx.destroyed_surfaces.push(wl_surface_id);
-            if let Some(m) = CUSTOM_ID_MAP.get()
-                && let Ok(mut map) = m.lock()
-            {
-                map.retain(|_, value| !(value.0 == fd && value.1 == wl_surface_id));
-            }
         }
     }
     conn.purge(msg.object_id);
@@ -342,18 +340,16 @@ mod deleted_id_tests {
     use super::super::super::test_support::message;
     use super::*;
 
+    fn recycle(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
+        on_delete_id(conn, msg)
+    }
+
     #[test]
     fn a_reserved_id_is_not_recycled_twice_or_returned_to_the_client() {
         let mut conn = WaylandConn::new();
         let deleted = message(1, 1, &42_u32.to_ne_bytes());
-        assert!(matches!(
-            on_delete_id(&mut conn, &deleted),
-            Action::Suppress
-        ));
-        assert!(matches!(
-            on_delete_id(&mut conn, &deleted),
-            Action::Suppress
-        ));
+        assert!(matches!(recycle(&mut conn, &deleted), Action::Suppress));
+        assert!(matches!(recycle(&mut conn, &deleted), Action::Suppress));
         assert_eq!(conn.stolen_ids, vec![42]);
     }
 
@@ -362,12 +358,9 @@ mod deleted_id_tests {
         let mut conn = WaylandConn::new();
         conn.stolen_ids = (10..42).collect();
         let duplicate = message(1, 1, &10_u32.to_ne_bytes());
-        assert!(matches!(
-            on_delete_id(&mut conn, &duplicate),
-            Action::Suppress
-        ));
+        assert!(matches!(recycle(&mut conn, &duplicate), Action::Suppress));
         let new_id = message(1, 1, &42_u32.to_ne_bytes());
-        assert!(matches!(on_delete_id(&mut conn, &new_id), Action::Forward));
+        assert!(matches!(recycle(&mut conn, &new_id), Action::Forward));
         assert_eq!(conn.stolen_ids.len(), 32);
     }
 }
@@ -401,14 +394,18 @@ mod popup_shadow_tests {
         );
         let mut conn = WaylandConn::new();
         conn.xdg_wm_base_id = Some(2);
-        conn.role_window_id = Some("shadow-menu".into());
         let msg = WlMessage::new(
             40,
             REQ_GET_TOPLEVEL,
             request(40, REQ_GET_TOPLEVEL, 12, &[50]),
         );
-        let Action::Replace(out) = on_get_toplevel(fd, &mut conn, &msg, &mut Effects::default())
-        else {
+        let Action::Replace(out) = on_get_toplevel(
+            fd,
+            &mut conn,
+            &msg,
+            &mut Effects::default(),
+            Some("shadow-menu"),
+        ) else {
             panic!("popup not converted")
         };
         let (messages, _) = decode(&out.concat());

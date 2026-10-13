@@ -11,13 +11,6 @@
  */
 export declare function armNextWindowAsPopup(parentWindowId: string, targetWindowId: string, width: number, height: number, anchorX?: number | undefined | null, anchorY?: number | undefined | null, shadowInset?: number | undefined | null): number | null
 
-/**
- * Withdraw the newest pending declaration for `owner`.
- *
- * Omit `owner` to withdraw the newest unnamed declaration.
- */
-export declare function cancelLayerShellForNextWindow(owner?: string | undefined | null): boolean
-
 /** Cancel a pending first-cursor-enter capture. */
 export declare function cancelNextWindowFirstCursorEnter(token: number): boolean
 
@@ -59,6 +52,15 @@ export declare function dragWindow(hwnd: Buffer): void
 
 /** Release completed native input callbacks on the JavaScript thread. */
 export declare function drainWindowCallbacks(): void
+
+/**
+ * Release the native state recorded for a window that will not return.
+ *
+ * The layer-shell policy and the recorded input region are dropped, so a
+ * discarded wrapper cannot leave them behind. Do not call this for a window
+ * that merely hides and is shown again: it keeps its id and needs the record.
+ */
+export declare function forgetWindowState(windowId: string): boolean
 
 /**
  * Gets the position of the cursor
@@ -146,6 +148,21 @@ export declare function setInputRegion(windowHandle: string | Buffer, rects?: { 
 export declare function setWindowAsBackground(hwnd: Buffer): void
 
 /**
+ * Register (or clear) the layer-shell policy for a managed window.
+ *
+ * The policy is keyed by the id the application names the window with, so it
+ * may be registered before the window — or its surface — exists. It is read
+ * once, when the proxy resolves a surface's window id from the decorated
+ * title: a surface that has not taken a role yet becomes a layer surface with
+ * these options, and a surface that is already an ordinary toplevel can never
+ * become one.
+ *
+ * Returns whether the policy was accepted; `None` clears the policy. Refused
+ * options are not stored, and the window is still created as an ordinary one.
+ */
+export declare function setWindowLayerShell(windowId: string, options?: LayerShellOptions | undefined | null): boolean
+
+/**
  * Whether the active Wayland hooks allow a native popup attempt.
  *
  * Independent of the desktop name. This does not guarantee that a particular
@@ -155,23 +172,20 @@ export declare function setWindowAsBackground(hwnd: Buffer): void
 export declare function supportsNativeWaylandPopup(): boolean
 
 /**
- * Make the next window a layer surface.
+ * Re-key the native state recorded for one managed window under another.
  *
- * Must be called before the window — or, for an existing window, its surface —
- * is created: a compositor assigns a surface's role once and never changes it.
- * Returns whether the declaration was accepted; when it is refused the window
- * is still created as an ordinary one.
- * Named declarations belong only to that managed window; omit `owner` to use
- * the next eligible toplevel instead.
+ * A policy switch replaces the wrapper, and the replacement is a different
+ * window with a different id. The layer-shell policy and the recorded input
+ * region follow it, so nothing has to be mirrored on the application side.
  */
-export declare function useLayerShellForNextWindow(options: LayerShellOptions, owner?: string | undefined | null): boolean
+export declare function transferWindowState(fromId: string, toId: string): boolean
 
 /**
- * Whether a layer-shell declaration could be sent.
+ * Whether a layer-shell policy could be sent.
  *
- * The same option validation `useLayerShellForNextWindow` applies, without
- * queueing anything: callers can report a declaration that could never be
- * sent, and a settings UI can check a choice before anything is created.
+ * The same option validation `setWindowLayerShell` applies, without storing
+ * anything: callers can report options that could never be sent, and a
+ * settings UI can check a choice before anything is created.
  *
  * This answers for the options only, never for the compositor: whether it
  * takes layer surfaces at all is `isLayerShellAvailable()`, and a caller that

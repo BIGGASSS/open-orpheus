@@ -57,7 +57,10 @@ registerCallHandler<
     LOGGER.warn({ url: params.url }, "refused to create the music desktop window for url");
     return;
   }
-  if (musicDesktopWindow) musicDesktopWindow.destroy();
+  if (musicDesktopWindow) {
+    musicDesktopWindow.destroy();
+    musicDesktopWindow.releaseNativeState();
+  }
   musicDesktopWindow = new MusicDesktopWindow(params.url);
   if (params.visible) void musicDesktopWindow.show();
 });
@@ -79,5 +82,6 @@ registerCallHandler<
 registerCallHandler<[], void>("desktop.destroy", () => {
   if (!musicDesktopWindow) return;
   musicDesktopWindow.destroy();
+  musicDesktopWindow.releaseNativeState();
   musicDesktopWindow = null;
 });

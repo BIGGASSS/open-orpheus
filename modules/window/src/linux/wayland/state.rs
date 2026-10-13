@@ -1,11 +1,10 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     os::fd::RawFd,
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
-    time::{Duration, Instant},
 };
 
 use super::codec::Iface;
@@ -27,6 +26,27 @@ pub(crate) struct PopupGeometry {
 pub(crate) struct LayerWindow {
     pub(crate) wl_surface: u32,
     pub(crate) xdg_surface: u32,
+}
+
+/// The role a `wl_surface` has taken for the rest of its life.
+///
+/// A compositor assigns a surface's role once and never releases it while the
+/// surface lives, so this is decided at the surface's first role creation and
+/// from then on it is the authority: the surface either becomes a layer
+/// surface again on every later role object, or stays an ordinary toplevel
+/// that can never be converted.
+#[derive(Clone, Debug)]
+pub(crate) enum SurfaceRole {
+    /// Converted to `zwlr_layer_surface_v1`, with the options it was created
+    /// with so a later role object on the same surface can be converted again.
+    Layer(LayerShellOptions),
+    /// An ordinary `xdg_toplevel`.
+    ///
+    /// `reported` records that a later layer policy was refused for this
+    /// surface and the application has been told once: the policy outlives the
+    /// first role object, so without it the window would be reported on every
+    /// show.
+    Toplevel { reported: bool },
 }
 
 pub(crate) struct WaylandConn {
@@ -53,39 +73,27 @@ pub(crate) struct WaylandConn {
     pub(crate) layer_shell_id: Option<u32>,
     /// Converted windows, keyed by the id the client uses for its toplevel.
     pub(crate) layer_windows: HashMap<u32, LayerWindow>,
-    /// Surfaces that have taken the layer role, with the declaration that put
-    /// them there.
+    /// The role each surface has taken, decided once at its first role
+    /// creation and re-applied to every later role object.
     ///
-    /// The compositor keeps the role on the `wl_surface` after the role object
-    /// is gone (KWin answers a later `get_toplevel` on that surface with
-    /// `already_constructed`), so this outlives the window: a surface that asks
-    /// for a toplevel again has to be converted again. It is dropped with the
-    /// surface, so a genuinely new surface starts out ordinary.
-    pub(crate) layer_surfaces: HashMap<u32, LayerShellOptions>,
-    /// Surfaces that have been given the ordinary `xdg_toplevel` role.
-    ///
-    /// A compositor never releases a surface's role while the surface lives,
-    /// and unlike the layer role this one cannot be replaced by a layer surface:
-    /// asking is a fatal protocol error (`the wl_surface already has a role
-    /// assigned xdg_toplevel`). Remembered for the life of the surface so the
-    /// proxy can refuse instead of killing the connection.
-    pub(crate) toplevel_surfaces: HashSet<u32>,
+    /// The role outlives the role object: a surface that asks for a toplevel
+    /// again after being converted has to be converted again, and a surface
+    /// that was an ordinary toplevel can never take the layer role. It is
+    /// dropped with the surface, so a genuinely new surface starts undecided.
+    pub(crate) surface_roles: HashMap<u32, SurfaceRole>,
     /// The managed window id each surface belongs to, for the life of the
     /// surface.
     ///
-    /// `CUSTOM_ID_MAP` is what the application looks windows up by, and it is
-    /// cleared as soon as any object of the surface is destroyed — which is
-    /// exactly when a window asks for a role it cannot have: the old toplevel
-    /// is gone and the new one has no title yet. This keeps the name available
-    /// for that report, and dies with the surface itself.
+    /// This is the application's name for the surface, and it dies with the
+    /// surface itself; `state::window_surface` is the reverse lookup.
     pub(crate) surface_ids: HashMap<u32, String>,
     pub(crate) wl_to_layer: HashMap<u32, u32>,
     pub(crate) xdg_to_layer: HashMap<u32, u32>,
     /// Messages the proxy owes the client, queued by a request handler and
     /// flushed on the next inbound chunk.
     pub(crate) pending_to_client: Vec<Vec<u8>>,
-    pub(crate) deferred_role: Option<super::handlers::roles::DeferredRole>,
-    pub(crate) role_window_id: Option<String>,
+    /// The role transaction currently open on this connection, if any.
+    pub(crate) pending_role: Option<super::handlers::roles::PendingRole>,
 }
 
 impl WaylandConn {
@@ -111,14 +119,12 @@ impl WaylandConn {
             layer_shell_global: None,
             layer_shell_id: None,
             layer_windows: HashMap::new(),
-            layer_surfaces: HashMap::new(),
-            toplevel_surfaces: HashSet::new(),
+            surface_roles: HashMap::new(),
             surface_ids: HashMap::new(),
             wl_to_layer: HashMap::new(),
             xdg_to_layer: HashMap::new(),
             pending_to_client: Vec::new(),
-            deferred_role: None,
-            role_window_id: None,
+            pending_role: None,
         }
     }
 
@@ -144,14 +150,12 @@ impl WaylandConn {
         // be re-bound after a resync.
         self.layer_shell_id = None;
         self.layer_windows.clear();
-        self.layer_surfaces.clear();
-        self.toplevel_surfaces.clear();
+        self.surface_roles.clear();
         self.surface_ids.clear();
         self.wl_to_layer.clear();
         self.xdg_to_layer.clear();
         self.pending_to_client.clear();
-        self.deferred_role = None;
-        self.role_window_id = None;
+        self.pending_role = None;
     }
 
     pub(crate) fn alloc_injected_id(&mut self) -> Option<u32> {
@@ -175,8 +179,7 @@ impl WaylandConn {
                     self.purge(layer_id);
                 }
                 // The role dies with the surface it was assigned to.
-                self.layer_surfaces.remove(&id);
-                self.toplevel_surfaces.remove(&id);
+                self.surface_roles.remove(&id);
                 self.surface_ids.remove(&id);
                 self.popup_geometries
                     .retain(|xdg, _| self.xdg_to_wl.get(xdg) != Some(&id));
@@ -269,7 +272,19 @@ impl WaylandConn {
 
 #[cfg(test)]
 mod tests {
+    use super::super::layer_shell::{ANCHOR_ALL, LAYER_BACKGROUND};
+    use super::super::test_support::{options, serial};
+
     use super::*;
+
+    /// Serialize on the shared lock and start from empty policy state; the
+    /// policy map is process-global, so every module that touches it does this.
+    fn policy_fixture() -> std::sync::MutexGuard<'static, ()> {
+        let guard = serial();
+        init_state();
+        clear_all_layer_policies();
+        guard
+    }
 
     /// A connection that already knows one surface and one window object.
     fn connected() -> WaylandConn {
@@ -317,6 +332,36 @@ mod tests {
         assert_eq!(conn.alloc_injected_id(), None, "the pool is empty");
         assert!(conn.injected_ids.contains(&7) && conn.injected_ids.contains(&8));
         assert!(conn.stolen_ids.is_empty());
+    }
+
+    #[test]
+    fn a_policy_follows_its_window_to_a_replacement_id() {
+        let _serial = policy_fixture();
+        let options = LayerShellOptions {
+            namespace: "test".into(),
+            ..Default::default()
+        };
+
+        assert!(set_layer_policy("source", options.clone()));
+        assert!(transfer_layer_policy("source", "replacement"));
+
+        assert_eq!(
+            layer_policy("source"),
+            None,
+            "the discarded id keeps nothing"
+        );
+        assert_eq!(layer_policy("replacement"), Some(options));
+        clear_all_layer_policies();
+    }
+
+    #[test]
+    fn transferring_an_unknown_window_is_a_no_op() {
+        let _serial = policy_fixture();
+
+        assert!(transfer_layer_policy("missing", "replacement"));
+
+        assert_eq!(layer_policy("replacement"), None);
+        assert!(transfer_layer_policy("same", "same"));
     }
 
     #[test]
@@ -410,6 +455,111 @@ mod tests {
             Some(99)
         );
     }
+
+    #[test]
+    fn policies_are_keyed_by_window_and_replaced_in_place() {
+        let _serial = policy_fixture();
+
+        assert!(!has_layer_policies());
+        assert!(set_layer_policy("layer-a", options()));
+        assert!(set_layer_policy("layer-b", options()));
+        assert!(has_layer_policies());
+        assert_eq!(layer_policy("foreign"), None);
+        assert_eq!(layer_policy("layer-a"), Some(options()));
+        assert_eq!(layer_policy("layer-b"), Some(options()));
+
+        // Replacing a policy updates the window's entry, it does not append one.
+        let replaced = LayerShellOptions {
+            layer: LAYER_BACKGROUND,
+            ..options()
+        };
+        assert!(set_layer_policy("layer-a", replaced.clone()));
+        assert_eq!(layer_policy("layer-a"), Some(replaced));
+        assert_eq!(layer_policy("layer-b"), Some(options()));
+
+        assert!(clear_layer_policy("layer-a"));
+        assert_eq!(layer_policy("layer-a"), None);
+        assert!(has_layer_policies(), "layer-b is still registered");
+        assert!(clear_layer_policy("layer-b"));
+        assert!(!has_layer_policies());
+        // Clearing a window without a policy is not an error.
+        assert!(clear_layer_policy("layer-b"));
+        clear_all_layer_policies();
+    }
+
+    #[test]
+    fn invalid_options_are_rejected_before_a_policy_is_registered() {
+        let _serial = policy_fixture();
+
+        // The wayland-level setter applies the one implicit default and refuses
+        // state the compositor would answer with a protocol error.
+        let empty = LayerShellOptions {
+            namespace: "open-orpheus-test".into(),
+            ..Default::default()
+        };
+        assert!(super::super::set_layer_policy("defaulted", empty));
+        assert_eq!(
+            layer_policy("defaulted"),
+            Some(LayerShellOptions {
+                namespace: "open-orpheus-test".into(),
+                anchor: ANCHOR_ALL,
+                ..Default::default()
+            })
+        );
+
+        let bad_layer = LayerShellOptions {
+            layer: 4,
+            ..options()
+        };
+        assert!(!super::super::set_layer_policy("bad-layer", bad_layer));
+        assert_eq!(layer_policy("bad-layer"), None);
+        assert!(
+            LayerShellOptions::default().validate().is_err(),
+            "no namespace"
+        );
+        clear_all_layer_policies();
+    }
+
+    #[test]
+    fn role_decision_is_needed_only_while_something_could_decide_it() {
+        let _serial = policy_fixture();
+        let fd = 94_020;
+        clear_runtime_state_for_fd(fd);
+
+        assert!(!role_decision_needed(fd));
+
+        assert!(set_policy(options()));
+        assert!(
+            role_decision_needed(fd),
+            "a policy could decide a role on any connection"
+        );
+
+        clear_all_layer_policies();
+        assert!(!role_decision_needed(fd));
+
+        PENDING_POPUPS.get().unwrap().lock().unwrap().insert(
+            fd,
+            PendingPopup {
+                token: 1,
+                parent_xdg_surface_id: 20,
+                width: 100,
+                height: 80,
+                shadow_inset: 0,
+                anchor_x: 0,
+                anchor_y: 0,
+                positioner_id: 900,
+                target_window_id: "menu-target".into(),
+            },
+        );
+        assert!(role_decision_needed(fd), "a popup is waiting for this fd");
+        assert!(
+            !role_decision_needed(fd + 1),
+            "another connection's popup does not matter"
+        );
+
+        clear_runtime_state_for_fd(fd);
+        assert!(!role_decision_needed(fd));
+    }
 }
 
 // ── Global state ───────────────────────────────────────────────────────────
@@ -479,17 +629,43 @@ pub(crate) static RX_PENDING_CTRL: OnceLock<Mutex<HashMap<RawFd, PendingControl>
 pub(crate) static TX_PENDING_CTRL: OnceLock<Mutex<HashMap<RawFd, PendingControl>>> =
     OnceLock::new();
 
-// Custom window ID map tracking user-assigned IDs via setTitle("\u{200B}\u{200C}<id>")
-pub(crate) static CUSTOM_ID_MAP: OnceLock<Mutex<HashMap<String, (RawFd, u32)>>> = OnceLock::new();
+// ── Managed window names ───────────────────────────────────────────────────
+
+/// The connection and `wl_surface` a managed window id names.
+///
+/// The id rides in the decorated title and is stored per surface in
+/// [`WaylandConn::surface_ids`]; this is the reverse lookup the injection and
+/// popup paths need. There are only ever a couple of connections with a handful
+/// of surfaces each, so a scan is cheaper than a second map with its own
+/// invalidation rules.
+pub(crate) fn window_surface(window_id: &str) -> Option<(RawFd, u32)> {
+    let conns = CONNS.get()?.lock().ok()?;
+    window_surface_in(&conns, window_id)
+}
+
+/// [`window_surface`] for a caller that already holds the connection lock.
+pub(crate) fn window_surface_in(
+    conns: &HashMap<RawFd, WaylandConn>,
+    window_id: &str,
+) -> Option<(RawFd, u32)> {
+    conns.iter().find_map(|(fd, conn)| {
+        conn.surface_ids
+            .iter()
+            .find(|(_, id)| id.as_str() == window_id)
+            .map(|(surface, _)| (*fd, *surface))
+    })
+}
 
 // ── Layer shell ────────────────────────────────────────────────────────────
 
-/// How long an unconsumed layer-shell declaration stays valid.
-const LAYER_DECLARATION_TTL: Duration = Duration::from_secs(2);
-
-/// Windows declared as layer surfaces before they exist, oldest first.
-type LayerDeclaration = (LayerShellOptions, Instant, Option<String>);
-static PENDING_LAYER_WINDOWS: OnceLock<Mutex<VecDeque<LayerDeclaration>>> = OnceLock::new();
+/// Layer-shell policy per managed window, registered ahead of the window's
+/// first role creation.
+///
+/// Keyed by the id the application names the window with, so it can be
+/// registered before the window (or its surface) exists. It is consulted once
+/// per surface, when that surface's role transaction resolves the window id,
+/// and never again: the decided role lives in `WaylandConn::surface_roles`.
+static WINDOW_POLICIES: OnceLock<Mutex<HashMap<String, LayerShellOptions>>> = OnceLock::new();
 
 /// Whether a connection knows a compositor that takes layer surfaces.
 ///
@@ -505,100 +681,94 @@ pub(crate) fn is_layer_shell_available() -> bool {
     conns.values().any(|conn| conn.layer_shell_global.is_some())
 }
 
-/// Test shorthand for queuing an unnamed layer-shell declaration.
-#[cfg(test)]
-pub(crate) fn declare_layer_window(options: LayerShellOptions) -> bool {
-    declare_named_layer_window(options, None)
-}
-
-/// Queue `options` before a window's role is created.
-///
-/// Named declarations belong to one managed window and replace its previous
-/// pending declaration. Unnamed declarations retain the positional behaviour.
-pub(crate) fn declare_named_layer_window(
-    options: LayerShellOptions,
-    owner: Option<String>,
-) -> bool {
-    // Saying nothing about size or anchors means "cover the output"; only
-    // combinations that cannot be sent are refused.
-    let options = options.with_defaults();
-    if options.validate().is_err() {
-        return false;
-    }
-    let Some(queue) = PENDING_LAYER_WINDOWS.get() else {
+/// Register (or replace) the layer-shell policy for a managed window.
+pub(crate) fn set_layer_policy(window_id: &str, options: LayerShellOptions) -> bool {
+    let Some(policies) = WINDOW_POLICIES.get() else {
         return false;
     };
-    let Ok(mut queue) = queue.lock() else {
+    let Ok(mut policies) = policies.lock() else {
         return false;
     };
-    if let Some(owner) = &owner {
-        queue.retain(|(_, _, existing)| existing.as_ref() != Some(owner));
-    }
-    queue.push_back((options, Instant::now(), owner));
+    policies.insert(window_id.to_string(), options);
     true
 }
 
-/// Test shorthand for cancelling the newest unnamed declaration.
-#[cfg(test)]
-pub(crate) fn cancel_layer_window() -> bool {
-    cancel_named_layer_window(None)
-}
-
-/// Drop the newest unconsumed declaration for `owner`, or the newest unnamed
-/// declaration when no owner is provided.
-pub(crate) fn cancel_named_layer_window(owner: Option<&str>) -> bool {
-    let Some(queue) = PENDING_LAYER_WINDOWS.get() else {
+/// Withdraw the policy for a managed window.
+///
+/// A surface that already took the layer role keeps it for its life; only the
+/// window's next surface (a re-created window) is affected.
+pub(crate) fn clear_layer_policy(window_id: &str) -> bool {
+    let Some(policies) = WINDOW_POLICIES.get() else {
+        return true;
+    };
+    let Ok(mut policies) = policies.lock() else {
         return false;
     };
-    let Ok(mut queue) = queue.lock() else {
-        return false;
-    };
-    let index = queue
-        .iter()
-        .rposition(|(_, _, existing)| existing.as_deref() == owner);
-    index.is_some_and(|index| queue.remove(index).is_some())
+    policies.remove(window_id);
+    true
 }
 
-/// Test shorthand for consuming the oldest live unnamed declaration.
-#[cfg(test)]
-pub(crate) fn take_layer_window_declaration() -> Option<LayerShellOptions> {
-    take_named_layer_window_declaration(None)
-}
-
-/// Discard stale declarations and consume the oldest matching owner first,
-/// falling back to the oldest unnamed declaration without taking another owner.
-pub(crate) fn take_named_layer_window_declaration(
-    owner: Option<&str>,
-) -> Option<LayerShellOptions> {
-    let queue = PENDING_LAYER_WINDOWS.get()?;
-    let Ok(mut queue) = queue.lock() else {
-        return None;
-    };
-    let now = Instant::now();
-    queue.retain(|(_, declared_at, _)| now.duration_since(*declared_at) <= LAYER_DECLARATION_TTL);
-    let index = owner
-        .and_then(|owner| {
-            queue
-                .iter()
-                .position(|(_, _, existing)| existing.as_deref() == Some(owner))
-        })
-        .or_else(|| queue.iter().position(|(_, _, existing)| existing.is_none()))?;
-    queue.remove(index).map(|(options, _, _)| options)
-}
-
-pub(crate) fn has_named_role_pending(fd: RawFd) -> bool {
-    PENDING_POPUPS
+/// The policy a managed window registered, if any.
+pub(crate) fn layer_policy(window_id: &str) -> Option<LayerShellOptions> {
+    WINDOW_POLICIES
         .get()
-        .and_then(|pending| pending.lock().ok())
-        .is_some_and(|pending| pending.contains_key(&fd))
-        || PENDING_LAYER_WINDOWS
+        .and_then(|policies| policies.lock().ok()?.get(window_id).cloned())
+}
+
+/// Re-key a managed window's layer-shell policy under another window id.
+///
+/// A policy switch replaces the wrapper, and the replacement is a different
+/// window with a different id; the policy has to follow it so the
+/// replacement's first role creation sees it.
+pub(crate) fn transfer_layer_policy(from_id: &str, to_id: &str) -> bool {
+    if from_id == to_id {
+        return true;
+    }
+    let Some(policies) = WINDOW_POLICIES.get() else {
+        return false;
+    };
+    let Ok(mut policies) = policies.lock() else {
+        return false;
+    };
+    if let Some(options) = policies.remove(from_id) {
+        policies.insert(to_id.to_string(), options);
+    }
+    true
+}
+
+/// Whether any window has a layer-shell policy that could still apply.
+pub(crate) fn has_layer_policies() -> bool {
+    WINDOW_POLICIES
+        .get()
+        .is_some_and(|policies| policies.lock().is_ok_and(|policies| !policies.is_empty()))
+}
+
+/// Whether a role creation on `fd` needs the window identity before deciding.
+///
+/// Either a layer policy is registered somewhere, or a popup reservation is
+/// waiting for its target window.
+pub(crate) fn role_decision_needed(fd: RawFd) -> bool {
+    has_layer_policies()
+        || PENDING_POPUPS
             .get()
-            .and_then(|queue| queue.lock().ok())
-            .is_some_and(|queue| {
-                queue
-                    .iter()
-                    .any(|(_, at, owner)| owner.is_some() && at.elapsed() <= LAYER_DECLARATION_TTL)
-            })
+            .and_then(|pending| pending.lock().ok())
+            .is_some_and(|pending| pending.contains_key(&fd))
+}
+
+/// Test shorthand for registering an unnamed policy.
+#[cfg(test)]
+pub(crate) fn set_policy(options: LayerShellOptions) -> bool {
+    set_layer_policy("test-window", options)
+}
+
+/// Test helper: drop every policy so cases do not leak into each other.
+#[cfg(test)]
+pub(crate) fn clear_all_layer_policies() {
+    if let Some(policies) = WINDOW_POLICIES.get()
+        && let Ok(mut policies) = policies.lock()
+    {
+        policies.clear();
+    }
 }
 
 pub(crate) type CursorEnterCb = Box<dyn FnOnce(Option<(i32, i32)>) + Send>;
@@ -832,14 +1002,8 @@ pub(crate) fn arm_next_popup_with_inset(
     // Keep the connection alive through allocation AND publication so close
     // cannot leave a pending request on a reused descriptor.
     let mut conns = CONNS.get()?.lock().ok()?;
-    let parent_mapping = CUSTOM_ID_MAP
-        .get()
-        .and_then(|map| map.lock().ok()?.get(parent_window_id).copied());
-    let (fd, parent_wl_surface_id) = parent_mapping?;
-    if let Some((target_fd, target_surface)) = CUSTOM_ID_MAP
-        .get()
-        .and_then(|map| map.lock().ok()?.get(target_window_id).copied())
-    {
+    let (fd, parent_wl_surface_id) = window_surface_in(&conns, parent_window_id)?;
+    if let Some((target_fd, target_surface)) = window_surface_in(&conns, target_window_id) {
         let target_conn = conns.get(&target_fd)?;
         // Some compositors create the hidden window's role before show. That
         // role is permanent: refuse before the caller shows an ordinary
@@ -851,7 +1015,10 @@ pub(crate) fn arm_next_popup_with_inset(
                 .map(String::as_str)
                 != Some(target_window_id)
             || target_conn.wl_to_top.contains_key(&target_surface)
-            || target_conn.layer_surfaces.contains_key(&target_surface)
+            || matches!(
+                target_conn.surface_roles.get(&target_surface),
+                Some(SurfaceRole::Layer(_))
+            )
         {
             return None;
         }
@@ -859,7 +1026,10 @@ pub(crate) fn arm_next_popup_with_inset(
     let conn = conns.get_mut(&fd)?;
     // A layer surface cannot be used as xdg_popup's xdg parent. Leave these
     // windows on the existing overlay path instead of sending an invalid role.
-    if conn.layer_surfaces.contains_key(&parent_wl_surface_id) {
+    if matches!(
+        conn.surface_roles.get(&parent_wl_surface_id),
+        Some(SurfaceRole::Layer(_))
+    ) {
         return None;
     }
     if conn
@@ -912,10 +1082,7 @@ pub(crate) fn arm_next_popup_with_inset(
 }
 
 pub(crate) fn window_is_popup(window_id: &str) -> bool {
-    let Some((fd, wl_surface_id)) = CUSTOM_ID_MAP
-        .get()
-        .and_then(|map| map.lock().ok()?.get(window_id).copied())
-    else {
+    let Some((fd, wl_surface_id)) = window_surface(window_id) else {
         return false;
     };
     let details = CONNS
@@ -1012,13 +1179,7 @@ pub(crate) fn cancel_pending_popup_for_connection(fd: RawFd, conn: &mut WaylandC
 pub(crate) fn watch_next_pointer_axis(window_id: &str, callback: PointerAxisCb) -> Option<u32> {
     let registration = (|| {
         let conns = CONNS.get()?.lock().ok()?;
-        let (fd, wl_surface_id) = CUSTOM_ID_MAP
-            .get()
-            .and_then(|map| map.lock().ok()?.get(window_id).copied())?;
-        let conn = conns.get(&fd)?;
-        if conn.surface_ids.get(&wl_surface_id).map(String::as_str) != Some(window_id) {
-            return None;
-        }
+        let (fd, wl_surface_id) = window_surface_in(&conns, window_id)?;
         Some((conns, fd, wl_surface_id))
     })();
     let Some((conns, fd, wl_surface_id)) = registration else {
@@ -1110,11 +1271,6 @@ pub(crate) fn clear_runtime_state_for_fd(fd: RawFd) {
             buttons.latest = None;
         }
     }
-    if let Some(m) = CUSTOM_ID_MAP.get()
-        && let Ok(mut map) = m.lock()
-    {
-        map.retain(|_, value| value.0 != fd);
-    }
     let pending_popup = PENDING_POPUPS
         .get()
         .and_then(|pending| pending.lock().ok()?.remove(&fd));
@@ -1190,14 +1346,13 @@ pub(crate) fn init_state() {
     LAST_BUTTON.get_or_init(|| Mutex::new(LastButtonState::default()));
     PENDING_POPUPS.get_or_init(|| Mutex::new(HashMap::new()));
     NEXT_POINTER_AXIS.get_or_init(|| Mutex::new(HashMap::new()));
-    CUSTOM_ID_MAP.get_or_init(|| Mutex::new(HashMap::new()));
     RX_BUFS.get_or_init(|| Mutex::new(HashMap::new()));
     TX_BUFS.get_or_init(|| Mutex::new(HashMap::new()));
     RX_PENDING_CTRL.get_or_init(|| Mutex::new(HashMap::new()));
     TX_PENDING_CTRL.get_or_init(|| Mutex::new(HashMap::new()));
     NEXT_TOPLEVEL_CURSOR_ENTER.get_or_init(|| Mutex::new(Vec::new()));
     CURSOR_ENTER_WATCHERS.get_or_init(|| Mutex::new(HashMap::new()));
-    PENDING_LAYER_WINDOWS.get_or_init(|| Mutex::new(VecDeque::new()));
+    WINDOW_POLICIES.get_or_init(|| Mutex::new(HashMap::new()));
 }
 
 pub(crate) fn clear_state() {
@@ -1230,11 +1385,6 @@ pub(crate) fn clear_state() {
         for watcher in watchers {
             (watcher.callback)(None);
         }
-    }
-    if let Some(m) = CUSTOM_ID_MAP.get()
-        && let Ok(mut map) = m.lock()
-    {
-        map.clear();
     }
     if let Some(m) = RX_BUFS.get()
         && let Ok(mut map) = m.lock()
@@ -1283,26 +1433,30 @@ pub(crate) fn clear_state() {
             (watcher.callback)(None);
         }
     }
-    if let Some(m) = PENDING_LAYER_WINDOWS.get()
-        && let Ok(mut queue) = m.lock()
+    if let Some(m) = WINDOW_POLICIES.get()
+        && let Ok(mut policies) = m.lock()
     {
-        queue.clear();
+        policies.clear();
     }
 }
 
 #[cfg(test)]
 mod popup_tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::{Duration, Instant},
     };
 
     use super::*;
 
-    // These interleavings observe the same global connection lock. Serialize
-    // them, like the injection fixtures, so one race cannot satisfy another's
-    // "connection locked" checkpoint before its worker has reached it.
-    static CONNECTION_RACES: Mutex<()> = Mutex::new(());
+    // These interleavings observe the same global connection lock, so they
+    // serialize on the one test mutex every global-touching module shares: one
+    // race cannot satisfy another's "connection locked" checkpoint before its
+    // worker has reached it.
+    use super::super::test_support::SERIAL as CONNECTION_RACES;
 
     fn wait_for_connection_lock() {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1373,12 +1527,6 @@ mod popup_tests {
         let mut conn = WaylandConn::new();
         conn.surface_ids.insert(10, "axis-owner".into());
         CONNS.get().unwrap().lock().unwrap().insert(fd, conn);
-        CUSTOM_ID_MAP
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .insert("axis-owner".into(), (fd, 10));
         let callbacks = Arc::new(AtomicU32::new(0));
         let counter = callbacks.clone();
         let watchers = NEXT_POINTER_AXIS.get().unwrap().lock().unwrap();
@@ -1408,12 +1556,6 @@ mod popup_tests {
         let mut replacement = WaylandConn::new();
         replacement.surface_ids.insert(10, "other-owner".into());
         CONNS.get().unwrap().lock().unwrap().insert(fd, replacement);
-        CUSTOM_ID_MAP
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .insert("axis-owner".into(), (fd, 10));
         assert!(
             watch_next_pointer_axis("axis-owner", Box::new(|axis| assert!(axis.is_none())))
                 .is_none()
@@ -1436,12 +1578,6 @@ mod popup_tests {
         conn.surface_ids.insert(10, window_id.into());
         conn.stolen_ids.push(900);
         CONNS.get().unwrap().lock().unwrap().insert(fd, conn);
-        CUSTOM_ID_MAP
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .insert(window_id.into(), (fd, 10));
 
         // Stop publication at the pending lock. Arming must retain CONNS while
         // blocked here; close must not pass it and remove the old connection.
@@ -1504,11 +1640,6 @@ mod popup_tests {
         conn.ifaces.insert(31, Iface::XdgToplevel);
         conn.stolen_ids.push(900);
         CONNS.get().unwrap().lock().unwrap().insert(fd, conn);
-        {
-            let mut map = CUSTOM_ID_MAP.get().unwrap().lock().unwrap();
-            map.insert(parent_id.into(), (fd, 10));
-            map.insert(target_id.into(), (fd, 11));
-        }
         assert!(arm_next_popup(parent_id, target_id, 100, 80, Some((4, 5))).is_none());
         assert!(take_pending_popup(fd, target_id).is_none());
         {
@@ -1529,12 +1660,6 @@ mod popup_tests {
         let mut conn = WaylandConn::new();
         conn.surface_ids.insert(10, window_id.into());
         CONNS.get().unwrap().lock().unwrap().insert(fd, conn);
-        CUSTOM_ID_MAP
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .insert(window_id.into(), (fd, 10));
 
         // A tracked window alone is not enough: it needs an xdg parent.
         assert!(arm_next_popup(window_id, "target", 100, 80, Some((4, 5))).is_none());
@@ -1576,12 +1701,6 @@ mod popup_tests {
         replacement.surface_ids.insert(10, "new-window".into());
         replacement.stolen_ids.push(901);
         CONNS.get().unwrap().lock().unwrap().insert(fd, replacement);
-        CUSTOM_ID_MAP
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .insert("old-window".into(), (fd, 10));
         assert!(arm_next_popup("old-window", "target", 100, 80, Some((0, 0))).is_none());
         assert_eq!(
             CONNS
@@ -1652,12 +1771,9 @@ mod popup_tests {
                 target_window_id: "target".into(),
             },
         );
-        CUSTOM_ID_MAP
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .insert("test-window".into(), (fd, 10));
+        let mut conn = WaylandConn::new();
+        conn.surface_ids.insert(10, "test-window".into());
+        CONNS.get().unwrap().lock().unwrap().insert(fd, conn);
         let mut last_buttons = LAST_BUTTON.get().unwrap().lock().unwrap();
         last_buttons.by_surface.insert(
             (fd, 10),
@@ -1710,14 +1826,10 @@ mod popup_tests {
                 .unwrap()
                 .contains_key(&fd)
         );
-        assert!(
-            !CUSTOM_ID_MAP
-                .get()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .contains_key("test-window")
-        );
+        // The window name lives in the connection's surface map, so per-fd
+        // runtime cleanup leaves it alone: it dies with the surface (and the
+        // connection), not with the runtime state.
+        assert_eq!(window_surface("test-window"), Some((fd, 10)));
         let last_buttons = LAST_BUTTON.get().unwrap().lock().unwrap();
         assert!(
             last_buttons
@@ -1730,9 +1842,14 @@ mod popup_tests {
                 .latest
                 .is_none_or(|(button_fd, _)| button_fd != fd)
         );
+        drop(last_buttons);
 
         fire_next_pointer_axis(other_fd, 11, 1);
         assert_eq!(retained.load(Ordering::Relaxed), 1);
+
+        // The name is connection-scoped, so it goes away with the connection.
+        on_close(fd);
+        assert!(window_surface("test-window").is_none());
     }
 
     #[test]
