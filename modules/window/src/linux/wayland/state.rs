@@ -344,7 +344,7 @@ mod tests {
         };
 
         assert!(set_layer_policy("source", options.clone()));
-        assert!(transfer_layer_policy("source", "replacement"));
+        assert!(transfer_window_role("source", "replacement"));
 
         assert_eq!(
             layer_policy("source"),
@@ -359,10 +359,10 @@ mod tests {
     fn transferring_an_unknown_window_is_a_no_op() {
         let _serial = policy_fixture();
 
-        assert!(transfer_layer_policy("missing", "replacement"));
+        assert!(transfer_window_role("missing", "replacement"));
 
         assert_eq!(layer_policy("replacement"), None);
-        assert!(transfer_layer_policy("same", "same"));
+        assert!(transfer_window_role("same", "same"));
     }
 
     #[test]
@@ -489,6 +489,37 @@ mod tests {
     }
 
     #[test]
+    fn a_window_holds_one_role_and_each_clear_owns_only_its_kind() {
+        let _serial = policy_fixture();
+        let fd = 93_700;
+        clear_runtime_state_for_fd(fd);
+
+        // A popup intent is not a layer policy, even though both live in the
+        // same table.
+        insert_popup_policy_for_test(fd, "role-window", "role-parent", 100, 80, 0, Some((4, 5)));
+        assert!(layer_policy("role-window").is_none());
+        assert!(popup_policy("role-window").is_some());
+        assert!(!has_layer_policies());
+
+        // Clearing the layer policy must not take a popup intent with it.
+        assert!(clear_layer_policy("role-window"));
+        assert!(popup_policy("role-window").is_some());
+        assert!(clear_popup_policy("role-window"));
+        assert!(popup_policy("role-window").is_none());
+        assert!(!clear_popup_policy("role-window"), "already gone");
+
+        // The window's one slot now holds a layer policy instead.
+        assert!(set_layer_policy("role-window", options()));
+        assert!(layer_policy("role-window").is_some());
+        assert!(has_layer_policies());
+        assert!(clear_window_role("role-window"));
+        assert!(layer_policy("role-window").is_none());
+
+        clear_runtime_state_for_fd(fd);
+        clear_all_layer_policies();
+    }
+
+    #[test]
     fn invalid_options_are_rejected_before_a_policy_is_registered() {
         let _serial = policy_fixture();
 
@@ -573,14 +604,13 @@ pub(crate) struct LastButtonState {
     pub(crate) latest: Option<(RawFd, u32)>,
 }
 
-/// A popup role reserved for a managed window, keyed by that window's id.
+/// A popup role reserved for a managed window, stored in [`WindowRole`].
 ///
 /// The window is identified the same way a layer policy is: the intent is
 /// registered before the window's role exists and consumed by the role
 /// transaction once the decorated title names the window. Only the intent is
 /// recorded here — the parent's surface, the anchor and the positioner object id
-/// are resolved when the role is actually created, so registering it cannot
-/// fail for want of them.
+/// are resolved when the role is actually created.
 #[derive(Clone)]
 pub(crate) struct PopupPolicy {
     pub(crate) parent_window_id: String,
@@ -596,7 +626,6 @@ pub(crate) struct PopupPolicy {
 }
 
 pub(crate) static LAST_BUTTON: OnceLock<Mutex<LastButtonState>> = OnceLock::new();
-pub(crate) static POPUP_POLICIES: OnceLock<Mutex<HashMap<String, PopupPolicy>>> = OnceLock::new();
 pub(crate) type PointerAxisCb = Box<dyn FnOnce(Option<u32>) + Send>;
 pub(crate) type PointerAxisWatcherKey = (RawFd, u32);
 pub(crate) struct PointerAxisWatcher {
@@ -656,16 +685,35 @@ pub(crate) fn window_surface_in(
     })
 }
 
-// ── Layer shell ────────────────────────────────────────────────────────────
+// ── Window roles ───────────────────────────────────────────────────────────
 
-/// Layer-shell policy per managed window, registered ahead of the window's
-/// first role creation.
+/// The role a managed window asked its surface to take.
 ///
-/// Keyed by the id the application names the window with, so it can be
-/// registered before the window (or its surface) exists. It is consulted once
-/// per surface, when that surface's role transaction resolves the window id,
-/// and never again: the decided role lives in `WaylandConn::surface_roles`.
-static WINDOW_POLICIES: OnceLock<Mutex<HashMap<String, LayerShellOptions>>> = OnceLock::new();
+/// One per window, because a surface takes exactly one role and the compositor
+/// keeps it for the surface's whole life. Keyed by the id the application names
+/// the window with, so it can be registered before the window (or its surface)
+/// exists; it is consulted when a surface's role transaction resolves that id,
+/// after which the decided role lives in `WaylandConn::surface_roles`.
+#[derive(Clone)]
+pub(crate) enum WindowRole {
+    /// Layer-shell options. Kept once the role is taken, so the window's next
+    /// surface applies them again.
+    Layer(LayerShellOptions),
+    /// A popup intent with the size the renderer measured. Taken when the role
+    /// is actually created.
+    Popup(PopupPolicy),
+}
+
+static WINDOW_ROLES: OnceLock<Mutex<HashMap<String, WindowRole>>> = OnceLock::new();
+
+fn window_roles() -> Option<&'static Mutex<HashMap<String, WindowRole>>> {
+    WINDOW_ROLES.get()
+}
+
+/// The role a managed window registered, if any.
+fn window_role(window_id: &str) -> Option<WindowRole> {
+    window_roles()?.lock().ok()?.get(window_id).cloned()
+}
 
 /// Whether a connection knows a compositor that takes layer surfaces.
 ///
@@ -683,76 +731,103 @@ pub(crate) fn is_layer_shell_available() -> bool {
 
 /// Register (or replace) the layer-shell policy for a managed window.
 pub(crate) fn set_layer_policy(window_id: &str, options: LayerShellOptions) -> bool {
-    let Some(policies) = WINDOW_POLICIES.get() else {
+    let Some(roles) = window_roles() else {
         return false;
     };
-    let Ok(mut policies) = policies.lock() else {
+    let Ok(mut roles) = roles.lock() else {
         return false;
     };
-    policies.insert(window_id.to_string(), options);
+    roles.insert(window_id.to_string(), WindowRole::Layer(options));
     true
 }
 
-/// Withdraw the policy for a managed window.
+/// Withdraw the layer-shell policy for a managed window.
 ///
 /// A surface that already took the layer role keeps it for its life; only the
 /// window's next surface (a re-created window) is affected.
 pub(crate) fn clear_layer_policy(window_id: &str) -> bool {
-    let Some(policies) = WINDOW_POLICIES.get() else {
+    let Some(roles) = window_roles() else {
         return true;
     };
-    let Ok(mut policies) = policies.lock() else {
+    let Ok(mut roles) = roles.lock() else {
         return false;
     };
-    policies.remove(window_id);
+    if matches!(roles.get(window_id), Some(WindowRole::Layer(_))) {
+        roles.remove(window_id);
+    }
     true
 }
 
-/// The policy a managed window registered, if any.
+/// The layer-shell policy a managed window registered, if any.
 pub(crate) fn layer_policy(window_id: &str) -> Option<LayerShellOptions> {
-    WINDOW_POLICIES
-        .get()
-        .and_then(|policies| policies.lock().ok()?.get(window_id).cloned())
-}
-
-/// Re-key a managed window's layer-shell policy under another window id.
-///
-/// A policy switch replaces the wrapper, and the replacement is a different
-/// window with a different id; the policy has to follow it so the
-/// replacement's first role creation sees it.
-pub(crate) fn transfer_layer_policy(from_id: &str, to_id: &str) -> bool {
-    if from_id == to_id {
-        return true;
+    match window_role(window_id)? {
+        WindowRole::Layer(options) => Some(options),
+        WindowRole::Popup(_) => None,
     }
-    let Some(policies) = WINDOW_POLICIES.get() else {
-        return false;
-    };
-    let Ok(mut policies) = policies.lock() else {
-        return false;
-    };
-    if let Some(options) = policies.remove(from_id) {
-        policies.insert(to_id.to_string(), options);
-    }
-    true
 }
 
 /// Whether any window has a layer-shell policy that could still apply.
 pub(crate) fn has_layer_policies() -> bool {
-    WINDOW_POLICIES
-        .get()
-        .is_some_and(|policies| policies.lock().is_ok_and(|policies| !policies.is_empty()))
+    window_roles().is_some_and(|roles| {
+        roles.lock().is_ok_and(|roles| {
+            roles
+                .values()
+                .any(|role| matches!(role, WindowRole::Layer(_)))
+        })
+    })
 }
 
 /// Whether a role creation on `fd` needs the window identity before deciding.
 ///
-/// Either a layer policy is registered somewhere, or a popup is waiting for its
-/// window on this connection.
+/// A layer policy is registered before its window exists, so it has no
+/// connection to name and holds role creations everywhere; a popup knows its
+/// parent's connection and holds only that one.
 pub(crate) fn role_decision_needed(fd: RawFd) -> bool {
-    has_layer_policies()
-        || POPUP_POLICIES
-            .get()
-            .and_then(|policies| policies.lock().ok())
-            .is_some_and(|policies| policies.values().any(|policy| policy.parent_fd == fd))
+    has_layer_policies() || popup_waits_on(fd)
+}
+
+fn popup_waits_on(fd: RawFd) -> bool {
+    window_roles().is_some_and(|roles| {
+        roles.lock().is_ok_and(|roles| {
+            roles.values().any(|role| match role {
+                WindowRole::Popup(policy) => policy.parent_fd == fd,
+                WindowRole::Layer(_) => false,
+            })
+        })
+    })
+}
+
+/// Re-key whatever role a managed window registered under another window id.
+///
+/// A policy switch replaces the wrapper, and the replacement is a different
+/// window with a different id; the role has to follow it so the replacement's
+/// first role creation sees it.
+pub(crate) fn transfer_window_role(from_id: &str, to_id: &str) -> bool {
+    if from_id == to_id {
+        return true;
+    }
+    let Some(roles) = window_roles() else {
+        return false;
+    };
+    let Ok(mut roles) = roles.lock() else {
+        return false;
+    };
+    if let Some(role) = roles.remove(from_id) {
+        roles.insert(to_id.to_string(), role);
+    }
+    true
+}
+
+/// Drop whatever role a window will not use after all.
+pub(crate) fn clear_window_role(window_id: &str) -> bool {
+    let Some(roles) = window_roles() else {
+        return true;
+    };
+    let Ok(mut roles) = roles.lock() else {
+        return false;
+    };
+    roles.remove(window_id);
+    true
 }
 
 /// Test shorthand for registering an unnamed policy.
@@ -761,13 +836,13 @@ pub(crate) fn set_policy(options: LayerShellOptions) -> bool {
     set_layer_policy("test-window", options)
 }
 
-/// Test helper: drop every policy so cases do not leak into each other.
+/// Test helper: drop every layer policy so cases do not leak into each other.
 #[cfg(test)]
 pub(crate) fn clear_all_layer_policies() {
-    if let Some(policies) = WINDOW_POLICIES.get()
-        && let Ok(mut policies) = policies.lock()
+    if let Some(roles) = window_roles()
+        && let Ok(mut roles) = roles.lock()
     {
-        policies.clear();
+        roles.retain(|_, role| !matches!(role, WindowRole::Layer(_)));
     }
 }
 
@@ -1035,58 +1110,59 @@ pub(crate) fn set_popup_policy(
         return false;
     }
 
-    let Some(mut policies) = POPUP_POLICIES.get_or_init(Default::default).lock().ok() else {
+    let Some(roles) = window_roles() else {
         return false;
     };
-    policies.insert(
+    let Ok(mut roles) = roles.lock() else {
+        return false;
+    };
+    roles.insert(
         target_window_id.to_string(),
-        PopupPolicy {
+        WindowRole::Popup(PopupPolicy {
             parent_window_id: parent_window_id.to_string(),
             parent_fd,
             width,
             height,
             shadow_inset,
             anchor,
-        },
+        }),
     );
     true
 }
 
-/// The policy recorded for `window_id`, if one is waiting for its role.
+/// The popup intent recorded for `window_id`, if that is its role.
 pub(crate) fn popup_policy(window_id: &str) -> Option<PopupPolicy> {
-    let policies = POPUP_POLICIES.get()?.lock().ok()?;
-    policies.get(window_id).cloned()
-}
-
-/// Drop the policy for `window_id` once its role has actually become a popup.
-pub(crate) fn take_popup_policy(window_id: &str) -> Option<PopupPolicy> {
-    let mut policies = POPUP_POLICIES.get()?.lock().ok()?;
-    policies.remove(window_id)
-}
-
-/// Withdraw a popup policy the window will not use after all.
-pub(crate) fn clear_popup_policy(window_id: &str) -> bool {
-    POPUP_POLICIES
-        .get()
-        .and_then(|policies| policies.lock().ok()?.remove(window_id))
-        .is_some()
-}
-
-/// Re-key a window's popup policy under another window id.
-pub(crate) fn transfer_popup_policy(from_id: &str, to_id: &str) -> bool {
-    if from_id == to_id {
-        return true;
+    match window_role(window_id)? {
+        WindowRole::Popup(policy) => Some(policy),
+        WindowRole::Layer(_) => None,
     }
-    let Some(policies) = POPUP_POLICIES.get() else {
-        return true;
-    };
-    let Ok(mut policies) = policies.lock() else {
+}
+
+/// Drop the popup intent for `window_id` once its role has actually become a
+/// popup.
+pub(crate) fn take_popup_policy(window_id: &str) -> Option<PopupPolicy> {
+    let mut roles = window_roles()?.lock().ok()?;
+    if !matches!(roles.get(window_id), Some(WindowRole::Popup(_))) {
+        return None;
+    }
+    match roles.remove(window_id) {
+        Some(WindowRole::Popup(policy)) => Some(policy),
+        _ => None,
+    }
+}
+
+/// Withdraw a popup intent the window will not use after all.
+pub(crate) fn clear_popup_policy(window_id: &str) -> bool {
+    let Some(roles) = window_roles() else {
         return false;
     };
-    if let Some(policy) = policies.remove(from_id) {
-        policies.insert(to_id.to_string(), policy);
+    let Ok(mut roles) = roles.lock() else {
+        return false;
+    };
+    if !matches!(roles.get(window_id), Some(WindowRole::Popup(_))) {
+        return false;
     }
-    true
+    roles.remove(window_id).is_some()
 }
 
 /// Register a policy as the menu does, without a real parent surface.
@@ -1100,20 +1176,20 @@ pub(crate) fn insert_popup_policy_for_test(
     shadow_inset: i32,
     anchor: Option<(i32, i32)>,
 ) {
-    POPUP_POLICIES
+    WINDOW_ROLES
         .get_or_init(Default::default)
         .lock()
         .unwrap()
         .insert(
             target.to_string(),
-            PopupPolicy {
+            WindowRole::Popup(PopupPolicy {
                 parent_window_id: parent.to_string(),
                 parent_fd: fd,
                 width,
                 height,
                 shadow_inset,
                 anchor,
-            },
+            }),
         );
 }
 
@@ -1266,11 +1342,12 @@ pub(crate) fn clear_runtime_state_for_fd(fd: RawFd) {
         }
     }
     // A popup that never got its window is dropped with the connection it would
-    // have been created on.
-    if let Some(policies) = POPUP_POLICIES.get()
-        && let Ok(mut policies) = policies.lock()
+    // have been created on. A layer policy has no connection to go stale with.
+    if let Some(roles) = WINDOW_ROLES.get()
+        && let Ok(mut roles) = roles.lock()
     {
-        policies.retain(|_, policy| policy.parent_fd != fd);
+        roles
+            .retain(|_, role| !matches!(role, WindowRole::Popup(policy) if policy.parent_fd == fd));
     }
     let axis_watchers = NEXT_POINTER_AXIS.get().and_then(|m| {
         let mut watchers = m.lock().ok()?;
@@ -1329,7 +1406,7 @@ pub(crate) fn is_wayland() -> bool {
 pub(crate) fn init_state() {
     CONNS.get_or_init(|| Mutex::new(HashMap::new()));
     LAST_BUTTON.get_or_init(|| Mutex::new(LastButtonState::default()));
-    POPUP_POLICIES.get_or_init(|| Mutex::new(HashMap::new()));
+    WINDOW_ROLES.get_or_init(|| Mutex::new(HashMap::new()));
     NEXT_POINTER_AXIS.get_or_init(|| Mutex::new(HashMap::new()));
     RX_BUFS.get_or_init(|| Mutex::new(HashMap::new()));
     TX_BUFS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1337,7 +1414,6 @@ pub(crate) fn init_state() {
     TX_PENDING_CTRL.get_or_init(|| Mutex::new(HashMap::new()));
     NEXT_TOPLEVEL_CURSOR_ENTER.get_or_init(|| Mutex::new(Vec::new()));
     CURSOR_ENTER_WATCHERS.get_or_init(|| Mutex::new(HashMap::new()));
-    WINDOW_POLICIES.get_or_init(|| Mutex::new(HashMap::new()));
 }
 
 pub(crate) fn clear_state() {
@@ -1352,10 +1428,10 @@ pub(crate) fn clear_state() {
         buttons.by_surface.clear();
         buttons.latest = None;
     }
-    if let Some(m) = POPUP_POLICIES.get()
-        && let Ok(mut policies) = m.lock()
+    if let Some(m) = WINDOW_ROLES.get()
+        && let Ok(mut roles) = m.lock()
     {
-        policies.clear();
+        roles.clear();
     }
     let axis_watchers = NEXT_POINTER_AXIS.get().and_then(|m| {
         let mut watchers = m.lock().ok()?;
@@ -1417,11 +1493,6 @@ pub(crate) fn clear_state() {
         for watcher in watchers {
             (watcher.callback)(None);
         }
-    }
-    if let Some(m) = WINDOW_POLICIES.get()
-        && let Ok(mut policies) = m.lock()
-    {
-        policies.clear();
     }
 }
 

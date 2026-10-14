@@ -46,10 +46,9 @@ pub(super) fn clear_layer_policy(window_id: &str) -> bool {
 
 /// Re-key everything the proxy knows about a window under another window id.
 pub(super) fn transfer_window_state(from_id: &str, to_id: &str) -> bool {
-    let policy = state::transfer_layer_policy(from_id, to_id);
-    let popup = state::transfer_popup_policy(from_id, to_id);
+    let role = state::transfer_window_role(from_id, to_id);
     let region = inject::transfer_input_region(from_id, to_id);
-    policy && popup && region
+    role && region
 }
 
 /// Release everything the proxy recorded for a window that will not return.
@@ -57,8 +56,7 @@ pub(super) fn transfer_window_state(from_id: &str, to_id: &str) -> bool {
 /// Distinct from [`transfer_window_state`]: the window keeps nothing, so a
 /// discarded wrapper cannot leave policy or region records behind.
 pub(super) fn forget_window_state(window_id: &str) -> bool {
-    state::clear_layer_policy(window_id);
-    state::clear_popup_policy(window_id);
+    state::clear_window_role(window_id);
     inject::forget_input_region(window_id);
     true
 }

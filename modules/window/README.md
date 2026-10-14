@@ -30,16 +30,15 @@ everything it does:
 
 ### What lives where
 
-| State                                                       | Key                              | Lives until                  |
-| ----------------------------------------------------------- | -------------------------------- | ---------------------------- |
-| `WaylandConn::surface_ids`                                  | `wl_surface` → managed id        | the surface is destroyed     |
-| `WaylandConn::surface_roles`                                | `wl_surface` → `SurfaceRole`     | the surface is destroyed     |
-| `WaylandConn::layer_windows`, `wl_to_layer`, `xdg_to_layer` | the per-show role objects        | the role object is destroyed |
-| `WaylandConn::pending_role`                                 | the open role transaction        | it is decided                |
-| `WINDOW_POLICIES`                                           | managed id → layer-shell options | cleared by the application   |
-| `POPUP_POLICIES`                                            | managed id → popup intent        | consumed, or cleared         |
-| `RECORDED_INPUT_REGIONS`                                    | managed id → input region        | cleared by the application   |
-| `WaylandConn::injected_ids`, `stolen_ids`                   | the proxy's own object ids       | the id is recycled           |
+| State                                                       | Key                                | Lives until                  |
+| ----------------------------------------------------------- | ---------------------------------- | ---------------------------- |
+| `WaylandConn::surface_ids`                                  | `wl_surface` → managed id          | the surface is destroyed     |
+| `WaylandConn::surface_roles`                                | `wl_surface` → `SurfaceRole`       | the surface is destroyed     |
+| `WaylandConn::layer_windows`, `wl_to_layer`, `xdg_to_layer` | the per-show role objects          | the role object is destroyed |
+| `WaylandConn::pending_role`                                 | the open role transaction          | it is decided                |
+| `WINDOW_ROLES`                                              | managed id → the role it asked for | consumed, or cleared         |
+| `RECORDED_INPUT_REGIONS`                                    | managed id → input region          | cleared by the application   |
+| `WaylandConn::injected_ids`, `stolen_ids`                   | the proxy's own object ids         | the id is recycled           |
 
 There is no `managed id → surface` map: that would duplicate `surface_ids` with
 its own invalidation rules, so `state::window_surface` derives it by scanning the
@@ -140,8 +139,9 @@ reported as applied.
 A managed window can be presented to the compositor as an `xdg_popup` of another
 managed window while the client keeps speaking `xdg_toplevel` — that is how a
 menu becomes a real popup instead of a fullscreen overlay. It is registered the
-same way as a layer policy: `setWindowPopupPolicy(targetId, parentId, …)` records
-the intent and the measured size against the **target** window id, and the role
+same way as a layer policy — both live in `WINDOW_ROLES`, because a window takes
+exactly one role: `setWindowPopupPolicy(targetId, parentId, …)` records the
+intent and the measured size against the **target** window id, and the role
 transaction consumes it when the decorated title names that window. Only the
 intent is recorded: the parent's `xdg_surface`, the anchor and the positioner
 object id are resolved when the role is created. Registration does have to find
