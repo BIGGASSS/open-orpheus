@@ -37,8 +37,11 @@ import { toError } from "../util";
 import { isLiveFocusedWindow, runMenuCallbacks, scheduleMenuTask } from "./menu/lifecycle";
 import { overlayPolicy, workaroundEnabled, WorkaroundFlags } from "./menu/workaround";
 import {
-  armNativeWaylandPopupWhenReady,
+  canAnchorNativeWaylandPopup,
+  clearNativeWaylandPopup,
   NATIVE_MENU_SHADOW_INSET,
+  registerNativeWaylandPopup,
+  releaseNativeWindowState,
   waitForWaylandPopup,
   waylandWindowId,
 } from "./menu/native-popup";
@@ -194,6 +197,14 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
 
   private async open(parentWindow?: BrowserWindow) {
     activateMenu(this);
+    // A native popup is anchored to a window the user is working in: focused,
+    // with the pointer over it, or clicked within the last 100 ms. Otherwise
+    // the overlay is the only sensible path — a tray click with the app in the
+    // background has neither a focus nor a pointer to anchor to. Sampled before
+    // any await, because loading templates can take a while and focus, pointer
+    // and the press clock all move on.
+    const popupParent =
+      parentWindow && canAnchorNativeWaylandPopup(parentWindow) ? parentWindow : null;
     try {
       await this.loadTemplates();
     } catch (error) {
@@ -208,10 +219,10 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       const desktopEnvironment = getDesktopEnvironment();
       if (desktopEnvironment === DesktopEnvironment.Wayland) {
         let supportsPopup = false;
-        if (parentWindow) {
+        if (popupParent) {
           try {
             supportsPopup = await waitWithAbort(
-              initializeWaylandPopupSupport(parentWindow),
+              initializeWaylandPopupSupport(popupParent),
               this.lifetimeAbort.signal
             );
           } catch (error) {
@@ -220,8 +231,8 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
           }
         }
         if (this.closed) return;
-        if (parentWindow && supportsPopup) {
-          this.showWaylandPopup(parentWindow);
+        if (popupParent && supportsPopup) {
+          this.showWaylandPopup(popupParent);
         } else {
           this.showOverlay();
         }
@@ -383,69 +394,56 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       if (this.closed) return;
       let popup: BrowserWindow | null = null;
       try {
-        // Create and load the exact target first. The native "next toplevel"
-        // reservation is armed only from its first size report, immediately
-        // before showInactive() asks Chromium to create the Wayland role.
+        // Create and load the exact target first. The popup policy is
+        // registered only from its first size report, immediately before
+        // showInactive() asks Chromium to create the Wayland role.
         popup = createMenuWindow(width, height);
         activePopup = popup;
         const showAsPopup = (actualWidth: number, actualHeight: number) => {
           width = actualWidth;
           height = actualHeight;
           popup?.setSize(width, height);
-          const cancelArm = armNativeWaylandPopupWhenReady(
-            waylandWindowId(parentWindow),
-            waylandWindowId(popup!),
-            width,
-            height,
-            undefined,
-            () =>
-              this.closed ||
-              parentWindow.isDestroyed() ||
-              popup?.isDestroyed() !== false ||
-              activePopup !== popup,
-            (disposePending) => {
-              if (this.closed || !popup || popup.isDestroyed() || activePopup !== popup) {
-                disposePending();
-                return;
-              }
-              this.dismissCleanups.push(disposePending);
-              try {
-                popup.showInactive();
-              } catch (err) {
-                disposePending();
-                fallbackToOverlay("popup show failed", err);
-                return;
-              }
-              void waitForWaylandPopup(waylandWindowId(popup), () =>
-                Boolean(this.closed || !popup || popup.isDestroyed() || activePopup !== popup)
-              ).then(
-                (converted) => {
-                  disposePending();
-                  if (this.closed || activePopup !== popup) return;
-                  if (!converted) {
-                    fallbackToOverlay("popup conversion timed out");
-                    return;
-                  }
-                  if (!this.closed && popup && !popup.isDestroyed() && activePopup === popup) {
-                    popupMapped = true;
-                    popup.webContents.send("menu.popupReady");
-                    popup.focus();
-                  }
-                },
-                (err) => {
-                  disposePending();
-                  if (this.closed || activePopup !== popup) return;
-                  fallbackToOverlay("popup conversion failed", err);
-                }
-              );
-            },
-            fallbackToOverlay
-          );
-          if (!this.closed && popup?.isDestroyed() === false && activePopup === popup) {
-            this.dismissCleanups.push(cancelArm);
-          } else {
-            cancelArm();
+          if (this.closed || !popup || popup.isDestroyed() || activePopup !== popup) return;
+          const popupId = waylandWindowId(popup);
+          if (
+            !registerNativeWaylandPopup(
+              waylandWindowId(parentWindow),
+              popupId,
+              width,
+              height,
+              undefined
+            )
+          ) {
+            fallbackToOverlay("popup policy refused");
+            return;
           }
+          try {
+            popup.showInactive();
+          } catch (err) {
+            clearNativeWaylandPopup(popupId);
+            fallbackToOverlay("popup show failed", err);
+            return;
+          }
+          void waitForWaylandPopup(popupId, () =>
+            Boolean(this.closed || !popup || popup.isDestroyed() || activePopup !== popup)
+          ).then(
+            (converted) => {
+              if (this.closed || activePopup !== popup) return;
+              if (!converted) {
+                fallbackToOverlay("popup conversion timed out");
+                return;
+              }
+              if (!this.closed && popup && !popup.isDestroyed() && activePopup === popup) {
+                popupMapped = true;
+                popup.webContents.send("menu.popupReady");
+                popup.focus();
+              }
+            },
+            (err) => {
+              if (this.closed || activePopup !== popup) return;
+              fallbackToOverlay("popup conversion failed", err);
+            }
+          );
         };
         bindWindow(popup, showAsPopup);
         popup.webContents.on("before-mouse-event", dismissOnWheel);
@@ -543,7 +541,11 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
     this.clearResources(this.submenuCleanups);
     const submenuWindow = this.submenuWindow;
     this.submenuWindow = null;
-    if (submenuWindow && !submenuWindow.isDestroyed()) submenuWindow.destroy();
+    if (submenuWindow && !submenuWindow.isDestroyed()) {
+      // The popup policy is keyed by window id, so drop it with the window.
+      releaseNativeWindowState(submenuWindow);
+      submenuWindow.destroy();
+    }
   }
 
   private openWaylandSubmenu(
@@ -610,54 +612,41 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
           try {
             // Keep the already-rendered window; only its native role is mapped.
             popup.setSize(width, height);
-            const cancelArm = armNativeWaylandPopupWhenReady(
-              waylandWindowId(parent),
-              waylandWindowId(popup),
-              width,
-              height,
-              {
+            const popupId = waylandWindowId(popup);
+            if (
+              !registerNativeWaylandPopup(waylandWindowId(parent), popupId, width, height, {
                 // DOM coordinates include the parent's shadow margin;
                 // xdg_positioner anchors are relative to its window geometry.
                 x: Math.max(0, normalizeMenuCoordinate(relX) - NATIVE_MENU_SHADOW_INSET - 1),
                 y: Math.max(0, normalizeMenuCoordinate(relY) - NATIVE_MENU_SHADOW_INSET),
-              },
-              () => !isCurrent(),
-              (disposePending) => {
-                if (!isCurrent()) {
-                  disposePending();
-                  return;
-                }
-                this.submenuCleanups.push(disposePending);
-                try {
-                  popup.showInactive();
-                } catch (error) {
-                  LOGGER.warn({ err: toError(error) }, "Wayland submenu show failed");
-                  disposePending();
+              })
+            ) {
+              closeUnavailable();
+              return;
+            }
+            try {
+              popup.showInactive();
+            } catch (error) {
+              LOGGER.warn({ err: toError(error) }, "Wayland submenu show failed");
+              clearNativeWaylandPopup(popupId);
+              closeUnavailable();
+              return;
+            }
+            void waitForWaylandPopup(popupId, () => !isCurrent()).then(
+              (converted) => {
+                if (!converted) {
                   closeUnavailable();
-                  return;
+                } else if (isCurrent()) {
+                  popupMapped = true;
+                  popup.webContents.send("menu.popupReady");
+                  popup.focus();
                 }
-                void waitForWaylandPopup(waylandWindowId(popup), () => !isCurrent()).then(
-                  (converted) => {
-                    disposePending();
-                    if (!converted) {
-                      closeUnavailable();
-                    } else if (isCurrent()) {
-                      popupMapped = true;
-                      popup.webContents.send("menu.popupReady");
-                      popup.focus();
-                    }
-                  },
-                  (error) => {
-                    LOGGER.warn({ err: toError(error) }, "Wayland submenu conversion failed");
-                    disposePending();
-                    closeUnavailable();
-                  }
-                );
               },
-              closeUnavailable
+              (error) => {
+                LOGGER.warn({ err: toError(error) }, "Wayland submenu conversion failed");
+                closeUnavailable();
+              }
             );
-            if (isCurrent()) this.submenuCleanups.push(cancelArm);
-            else cancelArm();
           } catch (error) {
             LOGGER.warn({ err: toError(error) }, "Wayland submenu arming failed");
             closeUnavailable();

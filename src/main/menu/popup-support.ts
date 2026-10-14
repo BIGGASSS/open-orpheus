@@ -9,7 +9,8 @@ import { toError } from "../../util";
 import { events, LifecycleState, state } from "../lifecycle";
 import { runMenuCallbacks } from "./lifecycle";
 import {
-  armNativeWaylandPopupWhenReady,
+  clearNativeWaylandPopup,
+  registerNativeWaylandPopup,
   waitForWaylandPopup,
   waylandWindowId,
 } from "./native-popup";
@@ -78,41 +79,29 @@ async function probePopup(parent: BrowserWindow): Promise<boolean | null> {
         cleanups.push(() => probe.off("closed", cancel));
         const isCancelled = () =>
           cancelled || settled || parent.isDestroyed() || probe.isDestroyed();
-        cleanups.push(
-          armNativeWaylandPopupWhenReady(
-            waylandWindowId(parent),
-            waylandWindowId(probe),
-            1,
-            1,
-            { x: 0, y: 0 },
-            isCancelled,
-            (disposePending) => {
-              cleanups.push(disposePending);
-              try {
-                probe.showInactive();
-                void waitForWaylandPopup(waylandWindowId(probe), isCancelled).then(
-                  (converted) => {
-                    finish(converted ? true : null);
-                  },
-                  (error) => {
-                    LOGGER.warn({ err: toError(error) }, "Wayland popup probe conversion failed");
-                    finish(null);
-                  }
-                );
-              } catch (error) {
-                LOGGER.warn({ err: toError(error) }, "Wayland popup probe show failed");
-                finish(null);
-              }
+        const probeId = waylandWindowId(probe);
+        if (
+          !registerNativeWaylandPopup(waylandWindowId(parent), probeId, 1, 1, { x: 0, y: 0 }, 0)
+        ) {
+          finish(null);
+          return;
+        }
+        cleanups.push(() => clearNativeWaylandPopup(probeId));
+        try {
+          probe.showInactive();
+          void waitForWaylandPopup(probeId, isCancelled).then(
+            (converted) => {
+              finish(converted ? true : null);
             },
-            (_reason, error) => {
-              if (error !== undefined) {
-                LOGGER.warn({ err: toError(error) }, "Wayland popup probe arming failed");
-              }
+            (error) => {
+              LOGGER.warn({ err: toError(error) }, "Wayland popup probe conversion failed");
               finish(null);
-            },
-            0
-          )
-        );
+            }
+          );
+        } catch (error) {
+          LOGGER.warn({ err: toError(error) }, "Wayland popup probe show failed");
+          finish(null);
+        }
       } catch (error) {
         LOGGER.warn({ err: toError(error) }, "Wayland popup probe initialization failed");
         finish(null);

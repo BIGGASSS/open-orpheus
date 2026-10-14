@@ -1,14 +1,18 @@
 import type { BrowserWindow } from "electron";
 import {
-  armNextWindowAsPopup,
-  cancelPendingPopup,
+  clearWindowPopupPolicy,
+  isWindowPointerInside,
   isWindowWaylandPopup,
+  setWindowPopupPolicy,
+  windowLastPressAgeMs,
 } from "@open-orpheus/window";
 import { ManagedWindow } from "../window";
+import { isLiveFocusedWindow } from "./lifecycle";
 
 const WAYLAND_POPUP_ID_WAIT_MS = 200;
 const WAYLAND_POPUP_ID_RETRY_MS = 5;
-const WAYLAND_POPUP_ARM_EXPIRY_MS = 5_000;
+/** A press this fresh in the window waives the focus and pointer checks. */
+const POPUP_ANCHOR_GRACE_MS = 100;
 // Room for the same 16px blur / 4px vertical offset used by overlay menus.
 export const NATIVE_MENU_SHADOW_INSET = 24;
 
@@ -16,6 +20,27 @@ export function waylandWindowId(wnd: BrowserWindow): string {
   const managed = ManagedWindow.fromBrowserWindow(wnd);
   if (!managed) throw new Error("popup requires a managed window");
   return managed.id;
+}
+
+/**
+ * Whether `wnd` may anchor a native popup.
+ *
+ * A button press recorded in this window within the grace period is the
+ * strongest evidence of intent — the user just clicked here — so both checks
+ * below are skipped: the compositor may not have delivered the focus change or
+ * the pointer enter yet. Otherwise the window has to be focused and have the
+ * pointer over it, because a popup anchored to a window the user is not
+ * working in has neither an anchor point nor a sensible place to appear.
+ *
+ * `windowLastPressAgeMs` answers `undefined` when the most recent press landed
+ * somewhere else, so a press in another window is not mistaken for one here.
+ */
+export function canAnchorNativeWaylandPopup(wnd: BrowserWindow): boolean {
+  const managed = ManagedWindow.fromBrowserWindow(wnd);
+  if (!managed) return false;
+  const pressedAgeMs = windowLastPressAgeMs(managed.id) ?? Number.POSITIVE_INFINITY;
+  if (pressedAgeMs <= POPUP_ANCHOR_GRACE_MS) return true;
+  return isLiveFocusedWindow(wnd) && isWindowPointerInside(managed.id);
 }
 
 export async function waitForWaylandPopup(windowId: string, isCancelled: () => boolean) {
@@ -32,66 +57,54 @@ export async function waitForWaylandPopup(windowId: string, isCancelled: () => b
   return false;
 }
 
-export function armNativeWaylandPopupWhenReady(
+/**
+ * Register `targetWindowId` as an xdg_popup of `parentWindowId`.
+ *
+ * Recorded against the target window id, like the layer-shell policy: the role
+ * is decided when the window's decorated title names it, and the parent's
+ * surface, the anchor and the object id are resolved then. Returns whether the
+ * intent was accepted; the caller still confirms the conversion with
+ * `waitForWaylandPopup` and keeps its overlay fallback.
+ */
+export function registerNativeWaylandPopup(
   parentWindowId: string,
   targetWindowId: string,
   width: number,
   height: number,
   anchor: { x: number; y: number } | undefined,
-  isCancelled: () => boolean,
-  onArmed: (disposePending: () => void) => void,
-  onUnavailable: (reason?: string, error?: unknown) => void,
   shadowInset = NATIVE_MENU_SHADOW_INSET
-) {
-  const deadline = Date.now() + WAYLAND_POPUP_ID_WAIT_MS;
-  let retryTimer: ReturnType<typeof setTimeout> | undefined;
-  let cancelled = false;
-  const attempt = () => {
-    if (cancelled || isCancelled()) return;
-    let token: number | null;
-    try {
-      token = armNextWindowAsPopup(
-        parentWindowId,
-        targetWindowId,
-        width,
-        height,
-        anchor?.x,
-        anchor?.y,
-        shadowInset
-      );
-    } catch (error) {
-      onUnavailable("popup arming failed", error);
-      return;
-    }
-    if (token !== null) {
-      let pending = true;
-      const expiryTimer = setTimeout(() => {
-        if (!pending) return;
-        pending = false;
-        cancelPendingPopup(token);
-        if (!cancelled && !isCancelled()) onUnavailable();
-      }, WAYLAND_POPUP_ARM_EXPIRY_MS);
-      const disposePending = () => {
-        if (!pending) return;
-        pending = false;
-        clearTimeout(expiryTimer);
-        cancelPendingPopup(token);
-      };
-      try {
-        onArmed(disposePending);
-      } catch (error) {
-        disposePending();
-        throw error;
-      }
-    } else if (Date.now() < deadline) {
-      retryTimer = setTimeout(attempt, WAYLAND_POPUP_ID_RETRY_MS);
-    } else {
-      onUnavailable();
-    }
-  };
-  attempt();
-  return () => {
-    cancelled = true;
-    if (retryTimer) clearTimeout(retryTimer);
-  };
+): boolean {
+  try {
+    return setWindowPopupPolicy(
+      targetWindowId,
+      parentWindowId,
+      width,
+      height,
+      anchor?.x,
+      anchor?.y,
+      shadowInset
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Withdraw a popup policy the window is not going to use. */
+export function clearNativeWaylandPopup(targetWindowId: string): boolean {
+  try {
+    return clearWindowPopupPolicy(targetWindowId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Release everything the native layer recorded for a window that is going away.
+ *
+ * Popup policies are keyed by window id, so a discarded window must drop its
+ * own; the wrapper does that when it is collected, but a window destroyed here
+ * would otherwise hold the policy until then.
+ */
+export function releaseNativeWindowState(wnd: BrowserWindow): void {
+  ManagedWindow.fromBrowserWindow(wnd)?.releaseNativeState();
 }

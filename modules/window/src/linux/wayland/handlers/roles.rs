@@ -277,31 +277,26 @@ mod tests {
             REQ_GET_LAYER_SURFACE, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION, REQ_SET_ICON,
             REQ_SET_TITLE, decorate_title,
         },
-        state::{self, PENDING_POPUPS, PendingPopup, SurfaceRole},
+        state::{self, SurfaceRole},
         test_support::{header, message, options, serial, u32_at, wl_string, word},
     };
     use super::*;
 
-    /// A connection with a pending popup reservation for `fd`, so a role
-    /// transaction opens without registering a process-global policy.
+    /// A connection with a pending popup policy for `fd`, so a role transaction
+    /// opens without registering a process-global layer policy.
     fn reserved(fd: RawFd) -> (MutexGuard<'static, ()>, WaylandConn) {
         let guard = serial();
         state::init_state();
         state::clear_all_layer_policies();
         state::clear_runtime_state_for_fd(fd);
-        PENDING_POPUPS.get().unwrap().lock().unwrap().insert(
+        state::insert_popup_policy_for_test(
             fd,
-            PendingPopup {
-                token: fd as u32,
-                parent_xdg_surface_id: 20,
-                width: 100,
-                height: 80,
-                shadow_inset: 0,
-                anchor_x: 4,
-                anchor_y: 5,
-                positioner_id: 900,
-                target_window_id: "menu-target".into(),
-            },
+            "menu-target",
+            "menu-parent",
+            100,
+            80,
+            0,
+            Some((4, 5)),
         );
         let mut conn = WaylandConn::new();
         conn.xdg_wm_base_id = Some(2);
@@ -310,7 +305,10 @@ mod tests {
         conn.ifaces.insert(10, Iface::WlSurface);
         conn.xdg_to_wl.insert(40, 10);
         conn.xdg_to_wl.insert(41, 11);
-        // The layer-shell machinery a conversion needs.
+        // The parent the popup names, on a surface of its own so it does not
+        // disturb the surfaces the role cases use.
+        conn.surface_ids.insert(99, "menu-parent".to_string());
+        conn.xdg_to_wl.insert(98, 99);
         conn.registry_id = Some(5);
         conn.ifaces.insert(5, Iface::WlRegistry);
         conn.layer_shell_global = Some((63, 5));
@@ -322,7 +320,7 @@ mod tests {
     /// is false unless some policy is registered.
     fn unreserved(fd: RawFd) -> (MutexGuard<'static, ()>, WaylandConn) {
         let (guard, conn) = reserved(fd);
-        PENDING_POPUPS.get().unwrap().lock().unwrap().remove(&fd);
+        state::clear_popup_policy("menu-target");
         (guard, conn)
     }
 
@@ -572,12 +570,8 @@ mod tests {
         assert_eq!(out[1], message(50, 3, &wl_string("orpheus")).raw());
         assert_eq!(conn.ifaces.get(&50), Some(&Iface::XdgToplevel));
         assert!(
-            PENDING_POPUPS
-                .get()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .contains_key(&fd)
+            state::popup_policy("menu-target").is_some(),
+            "another window cannot consume it"
         );
         assert!(send(fd, &mut conn, &message(41, REQ_GET_TOPLEVEL, &word(51))).is_empty());
         // Chromium may send a bare initial title before the decorated title.
@@ -593,12 +587,8 @@ mod tests {
         );
         assert_eq!(conn.ifaces.get(&51), Some(&Iface::XdgPopupShim));
         assert!(
-            !PENDING_POPUPS
-                .get()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .contains_key(&fd)
+            state::popup_policy("menu-target").is_none(),
+            "the popup consumed its own policy"
         );
         assert!(conn.pending_role.is_none());
         state::clear_runtime_state_for_fd(fd);

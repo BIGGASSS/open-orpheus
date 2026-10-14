@@ -714,6 +714,7 @@ mod tests {
                     wl_surface_id: 7,
                     x: 0,
                     y: 0,
+                    at: std::time::Instant::now(),
                 },
             );
             buttons.latest = Some((fixture.fd, 7));
@@ -747,6 +748,7 @@ mod tests {
                     wl_surface_id: 7,
                     x: 0,
                     y: 0,
+                    at: std::time::Instant::now(),
                 },
             );
             buttons.latest = Some((fixture.fd, 7));
@@ -782,6 +784,7 @@ mod tests {
                     wl_surface_id: 7,
                     x: 0,
                     y: 0,
+                    at: std::time::Instant::now(),
                 },
             );
             buttons.latest = Some((fixture.fd, 7));

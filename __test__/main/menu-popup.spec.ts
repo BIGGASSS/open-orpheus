@@ -26,8 +26,9 @@ const mocks = vi.hoisted(() => {
     });
     showInactive = vi.fn();
     focus = vi.fn();
+    focused = true;
     isDestroyed = () => this.destroyed;
-    isFocused = () => false;
+    isFocused = () => this.focused;
     constructor(id: string) {
       this.id = id;
     }
@@ -57,8 +58,10 @@ const mocks = vi.hoisted(() => {
     roots: [] as Window[],
     children: [] as Window[],
     ipc: new Map<object, MenuHandlers>(),
-    arm: vi.fn(() => 1 as number | null),
-    cancel: vi.fn(),
+    setPolicy: vi.fn(() => true),
+    clearPolicy: vi.fn(),
+    pointerInside: vi.fn(() => true),
+    pressAgeMs: vi.fn(() => null as number | null),
     supportsPopup: vi.fn(() => true),
     isPopup: vi.fn(() => true),
     desktop: "wayland",
@@ -83,8 +86,10 @@ vi.mock("@open-orpheus/window", () => ({
   DesktopEnvironment: { Wayland: "wayland", Windows: "windows" },
   getDesktopEnvironment: () => mocks.desktop,
   supportsNativeWaylandPopup: mocks.supportsPopup,
-  armNextWindowAsPopup: mocks.arm,
-  cancelPendingPopup: mocks.cancel,
+  setWindowPopupPolicy: mocks.setPolicy,
+  clearWindowPopupPolicy: mocks.clearPolicy,
+  isWindowPointerInside: mocks.pointerInside,
+  windowLastPressAgeMs: mocks.pressAgeMs,
   isWindowWaylandPopup: mocks.isPopup,
   captureWindowNextPointerAxis: () => 1,
   cancelWindowPointerAxisCapture: vi.fn(),
@@ -98,7 +103,12 @@ vi.mock("../../src/main/menu/popup-support", () => ({
   initializeWaylandPopupSupport: () => Promise.resolve(mocks.supportsPopup()),
 }));
 vi.mock("../../src/main/window", () => ({
-  ManagedWindow: { fromBrowserWindow: (wnd: { id: string }) => ({ id: wnd.id }) },
+  ManagedWindow: {
+    fromBrowserWindow: (wnd: { id: string }) => ({
+      id: wnd.id,
+      releaseNativeState: vi.fn(),
+    }),
+  },
 }));
 vi.mock("../../src/main/menu/windows", () => ({
   createMenuWindow: vi.fn(() => {
@@ -215,7 +225,9 @@ describe("Wayland popup single-render opening", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    mocks.arm.mockReturnValue(1);
+    mocks.setPolicy.mockReturnValue(true);
+    mocks.pointerInside.mockReturnValue(true);
+    mocks.pressAgeMs.mockReturnValue(null);
     mocks.supportsPopup.mockReturnValue(true);
     mocks.isPopup.mockReturnValue(true);
     mocks.desktop = "wayland";
@@ -239,8 +251,8 @@ describe("Wayland popup single-render opening", () => {
     vi.useRealTimers();
   });
 
-  async function openRoot() {
-    await menu.show(new mocks.Window("parent") as never);
+  async function openRoot(parent = new mocks.Window("parent")) {
+    await menu.show(parent as never);
     const root = mocks.roots[0];
     const handlers = mocks.ipc.get(root.webContents)!;
     return { root, handlers };
@@ -262,9 +274,9 @@ describe("Wayland popup single-render opening", () => {
       expect(root.destroyed).toBe(false);
       expect(root.setSize).toHaveBeenCalledExactlyOnceWith(232, 281);
       expect(root.showInactive).toHaveBeenCalledOnce();
-      expect(mocks.arm).toHaveBeenCalledExactlyOnceWith(
-        "parent",
+      expect(mocks.setPolicy).toHaveBeenCalledExactlyOnceWith(
         root.id,
+        "parent",
         232,
         281,
         undefined,
@@ -278,11 +290,52 @@ describe("Wayland popup single-render opening", () => {
     }
   );
 
+  it("keeps an unfocused requester on the overlay", async () => {
+    const parent = new mocks.Window("parent");
+    parent.focused = false;
+    await menu.show(parent as never);
+    expect(mocks.roots).toHaveLength(0);
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
+    expect(mocks.supportsPopup).not.toHaveBeenCalled();
+    expect(mocks.overlays).toHaveLength(1);
+  });
+
+  it("keeps a window the pointer is not over on the overlay", async () => {
+    mocks.pointerInside.mockReturnValue(false);
+    const parent = new mocks.Window("parent");
+    await menu.show(parent as never);
+    expect(mocks.roots).toHaveLength(0);
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
+    expect(mocks.overlays).toHaveLength(1);
+  });
+
+  it("waives both checks for 100ms after a press in the window", async () => {
+    const parent = new mocks.Window("parent");
+    parent.focused = false;
+    mocks.pointerInside.mockReturnValue(false);
+    mocks.pressAgeMs.mockReturnValue(50);
+    const { root, handlers } = await openRoot(parent);
+    expect(root).toBeDefined();
+    await handlers.reportSize(ipcEvent, 232, 281);
+    expect(mocks.setPolicy).toHaveBeenCalledOnce();
+    expect(mocks.overlays).toHaveLength(0);
+  });
+
+  it("does not waive the checks for a press that landed elsewhere", async () => {
+    const parent = new mocks.Window("parent");
+    parent.focused = false;
+    mocks.pointerInside.mockReturnValue(false);
+    mocks.pressAgeMs.mockReturnValue(null);
+    await menu.show(parent as never);
+    expect(mocks.roots).toHaveLength(0);
+    expect(mocks.overlays).toHaveLength(1);
+  });
+
   it("keeps unsupported Wayland sessions on the existing overlay path", async () => {
     mocks.supportsPopup.mockReturnValue(false);
     await menu.show(new mocks.Window("parent") as never);
     expect(mocks.roots).toHaveLength(0);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
     expect(mocks.overlays.at(-1)?.destroyed).toBe(false);
   });
 
@@ -293,7 +346,7 @@ describe("Wayland popup single-render opening", () => {
     });
     await menu.show(new mocks.Window("parent") as never);
     expect(mocks.roots).toHaveLength(0);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
     expect(mocks.overlays).toHaveLength(1);
     expect(logger.warn).toHaveBeenCalledWith(
       { err: error },
@@ -308,13 +361,13 @@ describe("Wayland popup single-render opening", () => {
         ? "before-create"
         : "before-show";
       mocks.noFullscreen = platform !== "kde";
-      mocks.arm.mockReturnValue(null);
+      mocks.setPolicy.mockReturnValue(false);
       const { root, handlers } = await openRoot();
       await handlers.reportSize(ipcEvent, 232, 281);
       await vi.advanceTimersByTimeAsync(200);
       expect(root.destroyed).toBe(true);
       expect(root.showInactive).not.toHaveBeenCalled();
-      expect(mocks.cancel).not.toHaveBeenCalled();
+      expect(mocks.clearPolicy).not.toHaveBeenCalled();
       expect(mocks.overlays).toHaveLength(1);
       const overlay = mocks.overlays[0];
       const data = await mocks.ipc.get(overlay.webContents)!.pull(ipcEvent);
@@ -325,27 +378,24 @@ describe("Wayland popup single-render opening", () => {
           ? ["capture", "create", "show"]
           : ["create", "capture", "show"]
       );
-      const attempts = mocks.arm.mock.calls.length;
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(mocks.arm).toHaveBeenCalledTimes(attempts);
+      expect(mocks.setPolicy).toHaveBeenCalledOnce();
       menu.close();
       expect(vi.getTimerCount()).toBe(0);
     }
   );
 
-  it("falls back if a later popup data retry throws", async () => {
-    const error = new Error("connection closed during retry");
-    mocks.arm.mockReturnValueOnce(null).mockImplementationOnce(() => {
-      throw error;
+  it("falls back when the native policy call throws", async () => {
+    mocks.setPolicy.mockImplementationOnce(() => {
+      throw new Error("connection closed during registration");
     });
     const { root, handlers } = await openRoot();
     await handlers.reportSize(ipcEvent, 232, 281);
-    await vi.advanceTimersByTimeAsync(5);
     expect(root.destroyed).toBe(true);
     expect(root.showInactive).not.toHaveBeenCalled();
     expect(mocks.overlays).toHaveLength(1);
     expect(logger.warn).toHaveBeenCalledWith(
-      { reason: "popup arming failed", err: error },
+      { reason: "popup policy refused" },
       "Wayland popup unavailable; falling back to overlay"
     );
   });
@@ -356,7 +406,6 @@ describe("Wayland popup single-render opening", () => {
     await handlers.reportSize(ipcEvent, 232, 281);
     await vi.advanceTimersByTimeAsync(200);
     expect(root.destroyed).toBe(true);
-    expect(mocks.cancel).toHaveBeenCalledWith(1);
     expect(root.webContents.send).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
       { reason: "popup conversion timed out" },
@@ -423,7 +472,7 @@ describe("Wayland popup single-render opening", () => {
     expect(mocks.children).toHaveLength(1);
     expect(child.destroyed).toBe(false);
     expect(child.showInactive).toHaveBeenCalledOnce();
-    expect(mocks.arm).toHaveBeenLastCalledWith(root.id, child.id, 120, 80, 207, 16, 24);
+    expect(mocks.setPolicy).toHaveBeenLastCalledWith(child.id, root.id, 120, 80, 207, 16, 24);
     expect((await mocks.ipc.get(child.webContents)!.pull(ipcEvent)).shadowInset).toBe(24);
     expect(child.webContents.send).toHaveBeenCalledExactlyOnceWith("menu.popupReady");
     expect((await mocks.ipc.get(child.webContents)!.pull(ipcEvent)).pendingPopup).toBe(false);
@@ -440,7 +489,7 @@ describe("Wayland popup single-render opening", () => {
       await handlers.openSubmenu(ipcEvent, [], {}, 232, 40);
       const child = mocks.children[0];
       expect((await mocks.ipc.get(child.webContents)!.pull(ipcEvent)).shadowInset).toBeUndefined();
-      expect(mocks.arm).not.toHaveBeenCalled();
+      expect(mocks.setPolicy).not.toHaveBeenCalled();
       expect(mocks.supportsPopup).not.toHaveBeenCalled();
       expect(mocks.roots[0].webContents.send).not.toHaveBeenCalled();
     }
@@ -477,32 +526,30 @@ describe("Wayland popup single-render opening", () => {
     await handlers.openSubmenu(ipcEvent, [], {}, 232, 40);
     const old = mocks.children[0];
     await handlers.openSubmenu(ipcEvent, [], {}, 232, 60);
-    mocks.arm.mockClear();
+    mocks.setPolicy.mockClear();
     await mocks.ipc.get(old.webContents)!.reportSize(ipcEvent, 120, 80);
     expect(old.destroyed).toBe(true);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
     menu.close();
     await handlers.reportSize(ipcEvent, 232, 281);
     expect(root.destroyed).toBe(true);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
   });
 
   it("times out a renderer that never reports its size", async () => {
     const { root } = await openRoot();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(root.destroyed).toBe(true);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).not.toHaveBeenCalled();
   });
 
-  it("cancels parent-readiness retries when closed before mapping", async () => {
-    mocks.arm.mockReturnValue(null);
+  it("never shows the window when the native policy is refused", async () => {
+    mocks.setPolicy.mockReturnValue(false);
     const { root, handlers } = await openRoot();
     await handlers.reportSize(ipcEvent, 232, 281);
-    menu.close();
-    mocks.arm.mockClear();
-    await vi.advanceTimersByTimeAsync(300);
-    expect(mocks.arm).not.toHaveBeenCalled();
+    expect(mocks.setPolicy).toHaveBeenCalledOnce();
     expect(root.showInactive).not.toHaveBeenCalled();
+    expect(root.destroyed).toBe(true);
   });
 
   it.each(["wayland", "windows"])("cancels root and submenu blur timers on %s", async (desktop) => {
