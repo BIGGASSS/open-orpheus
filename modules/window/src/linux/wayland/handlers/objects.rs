@@ -340,6 +340,23 @@ pub(crate) fn on_delete_id(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
             if conn.ifaces.get(&dead) == Some(&Iface::ZxdgToplevelDecoration) {
                 return Action::Suppress;
             }
+            // A reserved id: the client owns an object under it that the
+            // compositor was never allowed to create, and this is the callback
+            // that reserved it being consumed. The id is the client's, never
+            // ours — recycling it would hand the same id to both sides at once.
+            if let Some(reservation) = conn.reservations.get_mut(&dead) {
+                reservation.callback_done = true;
+                if reservation.client_done {
+                    // The client is already done with its object, so this answer
+                    // is exactly the release it is waiting for.
+                    conn.reservations.remove(&dead);
+                    return Action::Forward;
+                }
+                // The client is still using it. The events of the callback are
+                // hidden until it answers, which it just did; the release waits
+                // for the client's own destroy.
+                return Action::Suppress;
+            }
             conn.purge(dead);
             conn.stolen_ids.push(dead);
             return Action::Suppress;
