@@ -5,6 +5,12 @@
 //! a surface's role for the surface's whole life, so the decision can be made
 //! once and re-applied to every later role object on that surface.
 //!
+//! The block opens with `get_xdg_surface`, which is held too: a compositor may
+//! claim the surface's role there rather than in `get_toplevel` (wlroots does,
+//! KWin does not), and a layer conversion needs that role to still be free.
+//! When the outcome is not a layer surface the held creation is emitted first,
+//! so the compositor's object map matches the client's.
+//!
 //! Only the role's own requests are held. Anything else completes the
 //! transaction first and is then dispatched normally: a request that creates a
 //! new object id must not reach the compositor before the `get_toplevel` this
@@ -16,14 +22,38 @@
 use std::os::fd::RawFd;
 
 use super::super::codec::{
-    Iface, REQ_COMMIT, REQ_DESTROY, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION, REQ_SET_ICON,
-    REQ_SET_TITLE, WlMessage, parse_custom_title,
+    Iface, REQ_COMMIT, REQ_DESTROY, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION,
+    REQ_GET_XDG_SURFACE, REQ_SET_ICON, REQ_SET_TITLE, WlMessage, parse_custom_title,
 };
-use super::super::state::{SurfaceRole, WaylandConn, layer_policy, role_decision_needed};
+use super::super::layer_shell;
+use super::super::state::{
+    Reservation, SurfaceRole, WaylandConn, layer_policy, role_decision_needed,
+};
 use super::{Action, Effects, conversion, dispatch_request_inner, objects};
 
 /// Most messages one transaction may sweep before it is decided anyway.
 const MAX_SWEPT_ROLE_REQUESTS: usize = 32;
+
+/// A `get_xdg_surface` held while the window identity is still unknown.
+///
+/// The role belongs to the `wl_surface`, and it is claimed by whichever request
+/// the compositor assigns it in. wlroots-based compositors claim it here, in
+/// `xdg_wm_base.get_xdg_surface` — not at `get_toplevel`, which is the request
+/// this proxy replaces. Letting it through would therefore make the later layer
+/// conversion a fatal "surface already has a role" error there, so it waits
+/// with the rest of the client's block.
+pub(crate) struct PendingXdgSurface {
+    xdg_surface: u32,
+    wl_surface: u32,
+    msg: WlMessage,
+}
+
+impl PendingXdgSurface {
+    /// Whether this hold is about `id`, either the surface or its wl_surface.
+    pub(crate) fn concerns(&self, id: u32) -> bool {
+        self.xdg_surface == id || self.wl_surface == id
+    }
+}
 
 /// A role the client is building and the proxy has not decided yet.
 pub(crate) struct PendingRole {
@@ -33,6 +63,12 @@ pub(crate) struct PendingRole {
     /// layer surface id when the role is converted.
     toplevel: u32,
     toplevel_msg: WlMessage,
+    /// The `get_xdg_surface` that opened this surface, when it was held.
+    ///
+    /// A layer conversion drops it: the compositor must never create the
+    /// client's `xdg_surface`, or the surface's role is spent before the layer
+    /// role can be claimed. Every other outcome emits it first.
+    xdg_surface_msg: Option<WlMessage>,
     /// The managed window id the decorated title named, once it was seen.
     marker: Option<String>,
     /// Requests belonging to this role that arrived while it was held.
@@ -42,16 +78,23 @@ pub(crate) struct PendingRole {
 }
 
 impl PendingRole {
-    fn new(xdg_surface: u32, wl_surface: u32, msg: &WlMessage) -> Option<Self> {
-        Some(Self {
+    fn new(
+        xdg_surface: u32,
+        wl_surface: u32,
+        toplevel: u32,
+        msg: &WlMessage,
+        xdg_surface_msg: Option<WlMessage>,
+    ) -> Self {
+        Self {
             xdg_surface,
             wl_surface,
-            toplevel: msg.u32_arg(8)?,
+            toplevel,
             toplevel_msg: WlMessage::new(msg.object_id, msg.opcode, msg.raw().to_vec()),
+            xdg_surface_msg,
             marker: None,
             swept: Vec::new(),
             decoration_ids: Vec::new(),
-        })
+        }
     }
 }
 
@@ -61,36 +104,171 @@ pub(crate) fn dispatch(
     msg: &WlMessage,
     fx: &mut Effects,
 ) -> Action {
+    // A held `get_xdg_surface` opens the role the client is building only when
+    // the very next request asks for that surface's toplevel. Anything else
+    // means this is not the block shape the hold assumes, so the creation is
+    // released rather than left dangling: the window simply keeps an ordinary
+    // role instead of becoming an unconvertible one.
+    if let Some(parked) = conn.pending_xdg_surface.take() {
+        if msg.object_id == parked.xdg_surface && msg.opcode == REQ_GET_TOPLEVEL {
+            return begin_role(fd, conn, msg, fx, Some(parked.msg));
+        }
+        // Releasing the creation means the compositor is about to create the
+        // client's xdg_surface, and on compositors that claim the surface's
+        // role there (wlroots) the surface can never take the layer role
+        // afterwards. Record that, or the decision at the title would still try
+        // to convert it and kill the connection.
+        let mut out = Vec::new();
+        if matches!(
+            conn.surface_roles.get(&parked.wl_surface),
+            Some(SurfaceRole::Layer(_))
+        ) {
+            // This surface has been a layer surface, and the role sticks to the
+            // wl_surface for its whole life: asking it for any other role is the
+            // protocol error the conversion exists to avoid. The creation must
+            // not be forwarded, so the id is reserved and the surface stays
+            // virtual; the cached decision is left alone, and a later show
+            // retries it.
+            reserve_id(conn, &mut out, parked.xdg_surface);
+        } else {
+            // Otherwise the compositor is about to create the client's
+            // xdg_surface, and on compositors that claim the surface's role
+            // there (wlroots) the surface can never take the layer role
+            // afterwards. Record that, or the decision at the title would still
+            // try to convert it and kill the connection.
+            conn.surface_roles
+                .insert(parked.wl_surface, SurfaceRole::Toplevel { reported: false });
+            out.push(parked.msg.raw().to_vec());
+        }
+        append_action(&mut out, msg, dispatch(fd, conn, msg, fx));
+        return Action::Replace(out);
+    }
+
     if conn.pending_role.is_some() {
         return continue_role(fd, conn, msg, fx);
     }
+    if conn.ifaces.get(&msg.object_id) == Some(&Iface::XdgWmBase)
+        && msg.opcode == REQ_GET_XDG_SURFACE
+    {
+        return hold_xdg_surface(fd, conn, msg, fx);
+    }
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::XdgSurface) && msg.opcode == REQ_GET_TOPLEVEL
     {
-        return begin_role(fd, conn, msg, fx);
+        return begin_role(fd, conn, msg, fx, None);
     }
     dispatch_request_inner(fd, conn, msg, fx)
+}
+
+/// Hold `get_xdg_surface` until the window identity decides the surface's role.
+fn hold_xdg_surface(
+    fd: RawFd,
+    conn: &mut WaylandConn,
+    msg: &WlMessage,
+    fx: &mut Effects,
+) -> Action {
+    let (Some(xdg_surface), Some(wl_surface)) = (msg.u32_arg(8), msg.u32_arg(12)) else {
+        return dispatch_request_inner(fd, conn, msg, fx);
+    };
+    if !role_may_still_change(conn, fd, wl_surface) {
+        return dispatch_request_inner(fd, conn, msg, fx);
+    }
+    // The mapping the role decision needs, recorded exactly as forwarding does.
+    let _ = objects::on_get_xdg_surface(conn, msg);
+    conn.pending_xdg_surface = Some(PendingXdgSurface {
+        xdg_surface,
+        wl_surface,
+        msg: WlMessage::new(msg.object_id, msg.opcode, msg.raw().to_vec()),
+    });
+    Action::Suppress
+}
+
+/// Whether a role creation on this surface could still change its role.
+///
+/// A layer policy registered anywhere may apply to the window this surface is
+/// about to belong to — and a surface that is already a layer surface converts
+/// again on every show, even after the policy was withdrawn, because the
+/// decision is cached on the surface.
+fn role_may_still_change(conn: &WaylandConn, fd: RawFd, wl_surface: u32) -> bool {
+    role_decision_needed(fd)
+        || matches!(
+            conn.surface_roles.get(&wl_surface),
+            Some(SurfaceRole::Layer(_))
+        )
+}
+
+/// Reserve the id of a client object the compositor must not create.
+///
+/// A suppressed `new_id` leaves a hole in the compositor's object map at the
+/// edge it is still growing, and the next id the client allocates is refused
+/// outright, which takes the whole connection down. A callback occupies the id
+/// without claiming anything, and the proxy answers for the object from its own
+/// tables for the object's whole life — the callback is gone from the
+/// compositor long before the client is done with it.
+fn reserve_id(conn: &mut WaylandConn, out: &mut Vec<Vec<u8>>, id: u32) {
+    out.push(layer_shell::sync_callback(id));
+    conn.injected_ids.insert(id);
+    conn.reservations.insert(id, Reservation::default());
+}
+
+/// Emit a held `get_xdg_surface` in front of whatever `action` produced.
+///
+/// Used whenever the hold turns out not to be a layer conversion: the
+/// compositor still has to create the client's `xdg_surface`, and it has to
+/// exist before the request that names it.
+fn release_then(parked: Option<WlMessage>, msg: &WlMessage, action: Action) -> Action {
+    let Some(parked) = parked else {
+        return action;
+    };
+    let mut out = vec![parked.raw().to_vec()];
+    append_action(&mut out, msg, action);
+    Action::Replace(out)
 }
 
 /// Answer `get_toplevel`: re-apply a role already decided for this surface,
 /// open a transaction when the window identity could still change it, or
 /// forward it as an ordinary toplevel.
-fn begin_role(fd: RawFd, conn: &mut WaylandConn, msg: &WlMessage, fx: &mut Effects) -> Action {
+fn begin_role(
+    fd: RawFd,
+    conn: &mut WaylandConn,
+    msg: &WlMessage,
+    fx: &mut Effects,
+    xdg_surface_msg: Option<WlMessage>,
+) -> Action {
     let xdg_surface = msg.object_id;
     let Some(wl_surface) = conn.xdg_to_wl.get(&xdg_surface).copied() else {
-        return dispatch_request_inner(fd, conn, msg, fx);
+        return release_then(
+            xdg_surface_msg,
+            msg,
+            dispatch_request_inner(fd, conn, msg, fx),
+        );
     };
-    let Some(pending) = PendingRole::new(xdg_surface, wl_surface, msg) else {
-        return dispatch_request_inner(fd, conn, msg, fx);
+    let Some(toplevel) = msg.u32_arg(8) else {
+        return release_then(
+            xdg_surface_msg,
+            msg,
+            dispatch_request_inner(fd, conn, msg, fx),
+        );
     };
     if conn.surface_roles.contains_key(&wl_surface) {
         // The role is settled for this surface: re-apply it without waiting for
         // the title again.
+        let pending = PendingRole::new(xdg_surface, wl_surface, toplevel, msg, xdg_surface_msg);
         return Action::Replace(flush_role(fd, conn, &pending, fx));
     }
     if !role_decision_needed(fd) {
-        return dispatch_request_inner(fd, conn, msg, fx);
+        return release_then(
+            xdg_surface_msg,
+            msg,
+            dispatch_request_inner(fd, conn, msg, fx),
+        );
     }
-    conn.pending_role = Some(pending);
+    conn.pending_role = Some(PendingRole::new(
+        xdg_surface,
+        wl_surface,
+        toplevel,
+        msg,
+        xdg_surface_msg,
+    ));
     Action::Suppress
 }
 
@@ -235,15 +413,52 @@ fn flush_role(
             options,
             fx,
         ) {
+            // The client's xdg_surface never reaches the compositor, so reserve
+            // its id with an object that does not claim the surface's role. A
+            // suppressed `new_id` leaves a hole in the compositor's object map
+            // at the edge it is still growing, and the layer surface's own id —
+            // allocated right after it — is refused outright, which takes the
+            // whole connection down.
+            // The client's xdg_surface never reaches the compositor, so its id
+            // is reserved for it — the layer surface's own id is allocated
+            // right after it and would be refused if the map were left with a
+            // hole.
+            if pending.xdg_surface_msg.is_some() {
+                reserve_id(conn, &mut out, pending.xdg_surface);
+            }
             out.extend(messages);
             converted = true;
         } else if had_cached_role {
-            // Already a layer surface and the conversion cannot be sent: drop
-            // the role rather than hand the surface one it cannot take.
+            // Already a layer surface and the conversion cannot be sent — the
+            // compositor withdrew the global between shows, say. This surface
+            // can never become anything else, so the role is *not* handed back
+            // as an ordinary toplevel: every id the client allocated for the
+            // block is reserved instead and left unused, and the cached
+            // decision stays, so a later show retries the layer surface if the
+            // compositor brings the global back.
+            if pending.xdg_surface_msg.is_some() {
+                reserve_id(conn, &mut out, pending.xdg_surface);
+            }
+            reserve_id(conn, &mut out, toplevel);
+            // The client believes it has an xdg_toplevel there, and manager
+            // requests name it as one: recording that is what lets them be
+            // answered locally instead of forwarded to an object that does not
+            // exist.
+            conn.ifaces.insert(toplevel, Iface::XdgToplevel);
+            for decoration in &pending.decoration_ids {
+                reserve_id(conn, &mut out, *decoration);
+            }
             return out;
         }
     }
     if !converted {
+        // The compositor must never create the client's xdg_surface when the
+        // role is a layer surface — that is what spends the surface's role
+        // before the layer role can be claimed. Every other outcome has to
+        // create it, before the request that names it.
+        if let Some(parked) = &pending.xdg_surface_msg {
+            out.push(parked.raw().to_vec());
+        }
         append_action(
             &mut out,
             &pending.toplevel_msg,
@@ -273,14 +488,20 @@ mod tests {
 
     use super::super::super::{
         codec::{
-            DECORATION_CLIENT_SIDE, EVT_DECORATION_CONFIGURE, REQ_BIND, REQ_COMMIT, REQ_DESTROY,
-            REQ_GET_LAYER_SURFACE, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION, REQ_SET_ICON,
-            REQ_SET_TITLE, decorate_title,
+            DECORATION_CLIENT_SIDE, EVT_DECORATION_CONFIGURE, EVT_DELETE_ID, EVT_LAYER_CONFIGURE,
+            REQ_ACK_CONFIGURE, REQ_BIND, REQ_COMMIT, REQ_DESTROY, REQ_GET_LAYER_SURFACE,
+            REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION, REQ_GET_XDG_SURFACE,
+            REQ_LAYER_ACK_CONFIGURE, REQ_LAYER_DESTROY, REQ_SET_ICON, REQ_SET_TITLE,
+            decorate_title,
         },
         state::{self, SurfaceRole},
         test_support::{header, message, options, serial, u32_at, wl_string, word},
     };
     use super::*;
+
+    /// `wl_callback.done`, the only event the callback that reserves an id
+    /// sends, and the one a late arrival must never hand to the client.
+    const EVT_CALLBACK_DONE: u16 = 0;
 
     /// A connection with a pending popup policy for `fd`, so a role transaction
     /// opens without registering a process-global layer policy.
@@ -691,6 +912,395 @@ mod tests {
         assert_eq!(out[0], role.raw());
         assert_eq!(out[1], foreign.raw());
         assert!(conn.pending_role.is_none());
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_converted_window_never_gets_its_xdg_surface() {
+        let fd = 94_016;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+
+        // The client's block opens with `get_xdg_surface`, which claims the
+        // surface's role on compositors that assign it there.
+        let create = message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat());
+        assert!(
+            send(fd, &mut conn, &create).is_empty(),
+            "held with the rest of the block"
+        );
+
+        let out = send(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+
+        // The id of the creation that was dropped is reserved with a callback
+        // before the layer surface asks for its own, or the compositor refuses
+        // that one for skipping an id its object map has not grown to yet.
+        assert_eq!(
+            out[0],
+            message(1, 0, &word(40)).raw(),
+            "the dropped id is reserved first"
+        );
+        assert!(conn.injected_ids.contains(&40));
+        assert!(conn.reservations.contains_key(&40));
+
+        // The role is claimed on the shell object the proxy bound for itself.
+        // Objects are checked with the opcode, because opcodes alone are
+        // ambiguous across interfaces.
+        assert!(
+            out.iter()
+                .any(|m| header(m).0 == 60 && header(m).1 == REQ_GET_LAYER_SURFACE),
+            "the layer role is claimed"
+        );
+        assert!(
+            out.iter()
+                .all(|m| !(header(m).0 == 2 && header(m).1 == REQ_GET_XDG_SURFACE)),
+            "the compositor must not create the client's xdg_surface, or the \
+             surface's role is spent before the layer role can be claimed"
+        );
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_converted_window_closes_without_naming_a_missing_xdg_surface() {
+        let fd = 94_019;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+
+        assert!(
+            send(
+                fd,
+                &mut conn,
+                &message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat())
+            )
+            .is_empty()
+        );
+        let converted = send(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+        assert!(converted.iter().any(|m| header(m).0 == 60));
+
+        // The compositor consumes the callback that reserved the id as soon as
+        // it answers it — during the window's life, not at its teardown. That
+        // answer is not the client's to see: the tables that translate this
+        // window have to outlive it.
+        let body = [word(7), word(300), word(200)].concat();
+        let configure = message(50, EVT_LAYER_CONFIGURE, &body);
+        let consumed = super::super::dispatch_event(
+            &mut conn,
+            &message(1, EVT_DELETE_ID, &word(40)),
+            &mut Effects::default(),
+        );
+        assert!(
+            matches!(consumed, Action::Suppress),
+            "not the client's id to free"
+        );
+        assert!(conn.xdg_to_layer.contains_key(&40), "the mapping survives");
+        assert!(conn.layer_windows.contains_key(&50));
+
+        // So a configure still reaches the client as an xdg one, and its ack
+        // still reaches the compositor as a layer one.
+        let mut events = Vec::new();
+        let action = super::super::dispatch_event(&mut conn, &configure, &mut Effects::default());
+        append_action(&mut events, &configure, action);
+        assert!(!events.is_empty(), "the configure is still translated");
+        let acked = send(fd, &mut conn, &message(40, REQ_ACK_CONFIGURE, &word(7)));
+        assert_eq!(header(&acked[0]), (50, REQ_LAYER_ACK_CONFIGURE, 12));
+
+        // The client closes in its own order: the toplevel first, which is what
+        // the layer surface is destroyed through.
+        let toplevel = send(fd, &mut conn, &message(50, REQ_DESTROY, &[]));
+        assert_eq!(header(&toplevel[0]), (50, REQ_LAYER_DESTROY, 8));
+
+        // Then the surface. The compositor has had no object under that id since
+        // it consumed the callback, so nothing is sent for it — and the client
+        // is finally told the id is free, now that it is done with it.
+        let out = send(fd, &mut conn, &message(40, REQ_DESTROY, &[]));
+        assert!(out.is_empty(), "nothing reaches the compositor");
+        assert_eq!(
+            conn.pending_to_client,
+            vec![message(1, EVT_DELETE_ID, &word(40)).raw()]
+        );
+        assert!(!conn.reservations.contains_key(&40));
+        assert!(!conn.injected_ids.contains(&40));
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_window_that_closes_before_the_callback_answers_is_released_once() {
+        let fd = 94_024;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+
+        assert!(
+            send(
+                fd,
+                &mut conn,
+                &message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat())
+            )
+            .is_empty()
+        );
+        let converted = send(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+        assert!(converted.iter().any(|m| header(m).0 == 60));
+
+        // The window closes before the compositor has even answered the
+        // callback that reserved the id. Nothing may be handed to the client
+        // yet: the callback's own events are still on their way, and the id
+        // must not go back while they are.
+        let out = send(fd, &mut conn, &message(40, REQ_DESTROY, &[]));
+        assert!(out.is_empty());
+        assert!(conn.pending_to_client.is_empty(), "not released yet");
+        assert!(
+            conn.injected_ids.contains(&40),
+            "its events are still hidden"
+        );
+
+        // The callback answers now. Its `done` is nobody's business...
+        let done = message(40, EVT_CALLBACK_DONE, &word(7));
+        let hidden = super::super::dispatch_event(&mut conn, &done, &mut Effects::default());
+        assert!(
+            matches!(hidden, Action::Suppress),
+            "a late callback event must not reach a reused id"
+        );
+
+        // ...and its `delete_id` is exactly the release the client is waiting
+        // for. It must not be recycled: the id is the client's.
+        let freed = super::super::dispatch_event(
+            &mut conn,
+            &message(1, EVT_DELETE_ID, &word(40)),
+            &mut Effects::default(),
+        );
+        assert!(matches!(freed, Action::Forward), "the client is told");
+        assert!(!conn.reservations.contains_key(&40));
+        assert!(!conn.injected_ids.contains(&40));
+        assert!(!conn.stolen_ids.contains(&40), "never handed to us");
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_reserved_toplevel_answers_manager_requests() {
+        let fd = 94_025;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.ifaces.insert(70, Iface::ZxdgDecorationManager);
+        conn.ifaces.insert(71, Iface::XdgToplevelIconManager);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+        conn.layer_shell_global = None;
+
+        assert!(
+            send(
+                fd,
+                &mut conn,
+                &message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat())
+            )
+            .is_empty()
+        );
+        let reserved = send(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+        assert!(
+            reserved
+                .iter()
+                .any(|m| *m == message(1, 0, &word(50)).raw())
+        );
+
+        // The window has no toplevel on the compositor, so a manager request
+        // naming one cannot be forwarded: it is answered locally. The
+        // decoration is created virtually, the icon is dropped.
+        let mut body = word(80);
+        body.extend_from_slice(&word(50));
+        let decoration = send(
+            fd,
+            &mut conn,
+            &message(70, REQ_GET_TOPLEVEL_DECORATION, &body),
+        );
+        assert_eq!(decoration, vec![message(1, 0, &word(80)).raw()]);
+        assert_eq!(conn.pending_to_client.len(), 1, "a decoration configure");
+
+        let mut body = word(50);
+        body.extend_from_slice(&word(0));
+        let icon = send(fd, &mut conn, &message(71, REQ_SET_ICON, &body));
+        assert!(
+            icon.is_empty(),
+            "nothing may name a toplevel that is not there"
+        );
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_converted_window_closes_in_either_order() {
+        let fd = 94_023;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+
+        assert!(
+            send(
+                fd,
+                &mut conn,
+                &message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat())
+            )
+            .is_empty()
+        );
+        let converted = send(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+        assert!(converted.iter().any(|m| header(m).0 == 60));
+
+        // The xdg_surface first this time. Its own tables go, the layer surface
+        // stays: the toplevel's destroy is still on its way and still has to be
+        // translated.
+        let out = send(fd, &mut conn, &message(40, REQ_DESTROY, &[]));
+        assert!(out.is_empty());
+        assert!(conn.layer_windows.contains_key(&50), "still routed");
+        // The callback has not answered yet, so the id is not the client's to
+        // reuse: it waits for that answer, which is what releases it.
+        let reservation = conn.reservations.get(&40).expect("still reserved");
+        assert!(reservation.client_done && !reservation.callback_done);
+
+        let toplevel = send(fd, &mut conn, &message(50, REQ_DESTROY, &[]));
+        assert_eq!(header(&toplevel[0]), (50, REQ_LAYER_DESTROY, 8));
+        assert!(!conn.layer_windows.contains_key(&50));
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_cached_layer_role_is_kept_when_it_cannot_be_rebuilt() {
+        let fd = 94_021;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+        // The compositor withdrew layer shell after the previous show.
+        conn.layer_shell_global = None;
+
+        let create = message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat());
+        assert!(send(fd, &mut conn, &create).is_empty());
+        let out = send(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+
+        // A surface that has been a layer surface can never take another role,
+        // so nothing about the block reaches the compositor — but every id the
+        // client allocated is reserved, because a dropped `new_id` is a hole
+        // the client's next allocation falls into.
+        assert_eq!(
+            out,
+            vec![
+                message(1, 0, &word(40)).raw(),
+                message(1, 0, &word(50)).raw()
+            ]
+        );
+        assert!(conn.reservations.contains_key(&40) && conn.reservations.contains_key(&50));
+        assert!(
+            matches!(conn.surface_roles.get(&10), Some(SurfaceRole::Layer(_))),
+            "the decision is kept for a later show"
+        );
+        assert_eq!(
+            conn.ifaces.get(&50),
+            Some(&Iface::XdgToplevel),
+            "the client still believes it has a toplevel"
+        );
+        assert!(
+            !conn.layer_windows.contains_key(&50),
+            "but none was created"
+        );
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn an_interrupted_block_leaves_a_layer_surface_alone() {
+        let fd = 94_022;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_roles.insert(10, SurfaceRole::Layer(options()));
+
+        let create = message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat());
+        assert!(send(fd, &mut conn, &create).is_empty());
+        let sync = message(1, 0, &word(70));
+        let out = send(fd, &mut conn, &sync);
+
+        // The creation is not forwarded: the compositor must not claim a role
+        // this surface can never take back. The id is reserved instead, and the
+        // cached decision survives for the next show.
+        assert_eq!(out, vec![message(1, 0, &word(40)).raw(), sync.raw()]);
+        assert!(conn.reservations.contains_key(&40));
+        assert!(matches!(
+            conn.surface_roles.get(&10),
+            Some(SurfaceRole::Layer(_))
+        ));
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_released_creation_leaves_the_surface_an_ordinary_toplevel() {
+        let fd = 94_020;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+        conn.surface_ids.insert(10, "released-window".into());
+        assert!(state::set_layer_policy("released-window", options()));
+
+        // The block is interrupted before the toplevel, so the creation has to
+        // be released — which means the compositor claims the surface's role
+        // here, on the implementations that do it in `get_xdg_surface`.
+        let create = message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat());
+        assert!(send(fd, &mut conn, &create).is_empty());
+        let sync = message(1, 0, &word(70));
+        let released = send(fd, &mut conn, &sync);
+        assert_eq!(released[0], create.raw());
+        assert!(matches!(
+            conn.surface_roles.get(&10),
+            Some(SurfaceRole::Toplevel { reported: false })
+        ));
+
+        // The decision at the title must not try to convert it: asking for the
+        // layer role now is the fatal error this whole hold exists to avoid.
+        let (out, fx) =
+            dispatch_and_collect(fd, &mut conn, &message(40, REQ_GET_TOPLEVEL, &word(50)));
+        assert!(
+            out.iter()
+                .all(|m| !(header(m).0 == 60 && header(m).1 == REQ_GET_LAYER_SURFACE)),
+            "no layer surface was asked for"
+        );
+        assert_eq!(conn.ifaces.get(&50), Some(&Iface::XdgToplevel));
+        assert_eq!(fx.layer_shell_refused.as_deref(), Some("released-window"));
+
+        state::clear_all_layer_policies();
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_held_creation_is_released_before_an_ordinary_toplevel() {
+        let fd = 94_017;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+
+        let create = message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat());
+        assert!(send(fd, &mut conn, &create).is_empty());
+
+        // No title: the commit decides an ordinary toplevel, which needs the
+        // client's xdg_surface to exist on the compositor.
+        let role = message(40, REQ_GET_TOPLEVEL, &word(50));
+        assert!(send(fd, &mut conn, &role).is_empty());
+        let commit = message(10, REQ_COMMIT, &[]);
+        let out = send(fd, &mut conn, &commit);
+
+        assert_eq!(out[0], create.raw(), "the xdg_surface is created first");
+        assert_eq!(out[1], role.raw());
+        assert_eq!(out[2], commit.raw());
+        assert_eq!(conn.ifaces.get(&50), Some(&Iface::XdgToplevel));
+        state::clear_runtime_state_for_fd(fd);
+    }
+
+    #[test]
+    fn a_held_creation_is_released_when_something_else_follows() {
+        let fd = 94_018;
+        let (_guard, mut conn) = reserved(fd);
+        conn.ifaces.insert(2, Iface::XdgWmBase);
+
+        let create = message(2, REQ_GET_XDG_SURFACE, &[word(40), word(10)].concat());
+        assert!(send(fd, &mut conn, &create).is_empty());
+
+        // Not the toplevel the hold expects. The creation is released rather
+        // than left dangling, so whatever comes next still names an object the
+        // compositor has.
+        let attach = message(10, 1, &[word(0), word(0), word(0)].concat());
+        let out = send(fd, &mut conn, &attach);
+        assert_eq!(out[0], create.raw());
+        assert_eq!(out[1], attach.raw());
+        assert!(conn.pending_xdg_surface.is_none());
         state::clear_runtime_state_for_fd(fd);
     }
 

@@ -98,9 +98,16 @@ its title, and the proxy cannot name the window before that title, so:
   decision: the proxy re-emits `get_layer_surface` (or forwards `get_toplevel`)
   with no title needed and no buffering.
 
-Forwarding `get_xdg_surface` and replacing `get_toplevel` on its own id keeps the
-compositor's object map dense; only the decoration constructor introduced by a
-converted role needs the `wl_display.sync` id plug described below.
+`get_xdg_surface` is held with the rest of the block and only replayed when the
+outcome is not a layer surface. It has to be: the role belongs to the
+`wl_surface`, and a compositor is free to claim it in `get_xdg_surface` rather
+than in `get_toplevel` — wlroots does, KWin does not. Forwarding it and
+replacing only `get_toplevel` therefore works on KWin and kills the connection
+on Sway or Hyprland with "surface already has a role". Withholding it makes the
+outcome independent of where the compositor claims the role. Replacing
+`get_toplevel` on its own id keeps the compositor's object map dense; only the
+decoration constructor introduced by a converted role needs the
+`wl_display.sync` id plug described below.
 
 The role belongs to the `wl_surface`, and the compositor keeps it after the
 client destroys its role object. That is why a surface which ever took the
@@ -116,9 +123,35 @@ with `zwlr_layer_shell_v1.get_layer_surface` followed by the requested state.
 From then on the compositor sees a layer surface while the client keeps speaking
 xdg-shell, so the proxy suppresses or translates the xdg-shell traffic for that
 window and synthesises the configure and close events the client is waiting for.
-A window whose preconditions are not met (no global, no spare object id, an
-unknown surface) is left an ordinary toplevel rather than risking a protocol
-error, which would take the whole display connection down.
+Every id the client allocates for a window the compositor is not allowed to
+create an object for is **reserved**: a `wl_display.sync` callback takes the id
+without claiming anything. This is not optional. The compositor's object map
+grows one slot at a time and only accepts an id inside the range it has already
+grown to, so a dropped `new_id` is a hole that the client's next allocation falls
+into — the compositor refuses it and takes the whole connection down.
+
+The reservation has two lifetimes, though, not one: the compositor is done with
+the callback the moment it answers it, while the client keeps — or destroys — its
+object whenever it likes, and either can finish first. So the proxy answers for
+the object out of its own tables the whole time, hides the callback's events
+until it has answered, and releases the id only when **both** are done: whichever
+finishes second does the releasing. The id is never recycled into the proxy's own
+pool, because it belongs to the client.
+
+That covers the teardown — the client destroys its toplevel, its `xdg_surface`
+and their decoration in that order, and each destroy is answered by the proxy
+rather than forwarded — and requests that merely _name_ one of these ids. A
+decoration or an icon for a toplevel the compositor never created is answered
+locally too: forwarding one would name an object that is not there.
+
+A surface's role is even stickier than its role object. Once a `wl_surface` has
+held the layer role it can never hold another one — the role _type_ is only ever
+replaced by the same type, and only after the role object is gone. So a window
+whose layer surface cannot be rebuilt (the compositor withdrew the global, say)
+is not handed back as an ordinary toplevel: its ids are reserved, the cached
+decision is kept, and a later show retries it. A window whose preconditions are
+not met on its **first** show is left an ordinary toplevel instead, which is safe
+because that surface has not held a role yet.
 
 Application code does not call any of this directly. `ManagedWindow` owns it:
 `setLayerShell(options)` registers the policy with the native layer, and a window

@@ -45,13 +45,19 @@ pub(crate) fn on_client_toplevel_request(
 
 /// Requests from a client on the `xdg_surface` of a converted window.
 ///
-/// Its compositor-side counterpart was created but never given a role, so
+/// The compositor holds a reserved callback under that id, not the xdg_surface
+/// the client thinks it has, so nothing about it can be forwarded as written:
+/// what it means is translated onto the layer surface instead, and its destroy
+/// is left alone because it is already the callback's own.
 /// anything that would touch it has to be dropped or translated.
 pub(crate) fn on_client_xdg_surface_request(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     match msg.opcode {
         REQ_DESTROY => {
-            conn.purge(msg.object_id);
-            Action::Forward
+            // The id was reserved with a callback the compositor has long since
+            // consumed, so there is nothing out there to destroy: the proxy
+            // answers for it, and releases it to the client now that the client
+            // is done with it.
+            on_reserved_id_request(conn, msg)
         }
         REQ_SET_WINDOW_GEOMETRY | REQ_GET_TOPLEVEL => Action::Suppress,
         REQ_ACK_CONFIGURE => {
@@ -79,6 +85,42 @@ pub(crate) fn on_client_xdg_surface_request(conn: &mut WaylandConn, msg: &WlMess
         }
         _ => Action::Forward,
     }
+}
+
+/// Requests from a client on an id the compositor never created an object for,
+/// and whose callback has already answered and been consumed.
+///
+/// Nothing may be forwarded — there is no object to name — and the object is
+/// not the client's to destroy in any case. The client is told the id is free
+/// when it lets its own object go, which is the only moment libwayland is
+/// willing to reuse it.
+pub(crate) fn on_reserved_id_request(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
+    if msg.opcode == REQ_DESTROY {
+        let id = msg.object_id;
+        // Every table that answered for the client's object goes with it, or a
+        // later object under the same id would be misread.
+        conn.ifaces.remove(&id);
+        conn.xdg_to_wl.remove(&id);
+        // Except the layer surface that stands in for a converted window: it is
+        // destroyed by the toplevel's own destroy, which the client sends first
+        // but is not obliged to.
+        conn.xdg_to_layer.remove(&id);
+
+        // The callback that reserved the id is the compositor's to finish with,
+        // and it may not have answered yet. Its own `delete_id` is passed on to
+        // the client as the release when it arrives; if it already has, that
+        // answer was held back and the client is told now.
+        let Some(reservation) = conn.reservations.get_mut(&id) else {
+            return Action::Suppress;
+        };
+        reservation.client_done = true;
+        if reservation.callback_done {
+            conn.reservations.remove(&id);
+            conn.pending_to_client.push(layer_shell::delete_id(id));
+        }
+        // The callback's events stay hidden either way, until it has answered.
+    }
+    Action::Suppress
 }
 
 /// Events the compositor sends for a layer surface.
@@ -117,6 +159,7 @@ pub(crate) fn on_get_toplevel_decoration(conn: &mut WaylandConn, msg: &WlMessage
     };
     if !conn.layer_windows.contains_key(&toplevel_id)
         && conn.ifaces.get(&toplevel_id) != Some(&Iface::XdgPopupShim)
+        && !conn.reservations.contains_key(&toplevel_id)
     {
         return Action::Forward;
     }
@@ -144,7 +187,8 @@ pub(crate) fn on_set_icon(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     match msg.u32_arg(8) {
         Some(toplevel_id)
             if conn.layer_windows.contains_key(&toplevel_id)
-                || conn.ifaces.get(&toplevel_id) == Some(&Iface::XdgPopupShim) =>
+                || conn.ifaces.get(&toplevel_id) == Some(&Iface::XdgPopupShim)
+                || conn.reservations.contains_key(&toplevel_id) =>
         {
             Action::Suppress
         }
@@ -265,6 +309,29 @@ mod tests {
         assert_eq!(u32_at(&messages[0], 16), 70, "positioner preserved");
         assert_eq!(header(&messages[1]), (30, REQ_LAYER_GET_POPUP, 12));
         assert_eq!(u32_at(&messages[1], 8), 60);
+    }
+
+    #[test]
+    fn a_converted_window_answers_for_its_reserved_xdg_surface() {
+        let (_guard, mut conn) = fixture();
+        convert(&mut conn);
+
+        // Nothing about the id may be forwarded — the compositor has had no
+        // object under it since it consumed the callback — so the destroy is
+        // answered here. Whether that also releases the id depends on whether
+        // the callback has already answered: if it has, this is the release the
+        // client is waiting for.
+        let action = on_client_xdg_surface_request(&mut conn, &message(20, REQ_DESTROY, &[]));
+        assert!(matches!(action, Action::Suppress), "no reservation yet");
+        assert!(conn.pending_to_client.is_empty());
+
+        conn.reservations
+            .insert(20, crate::linux::wayland::state::Reservation::default());
+        conn.reservations.get_mut(&20).unwrap().callback_done = true;
+        let action = on_client_xdg_surface_request(&mut conn, &message(20, REQ_DESTROY, &[]));
+        assert!(matches!(action, Action::Suppress));
+        assert_eq!(conn.pending_to_client.len(), 1);
+        assert!(!conn.reservations.contains_key(&20));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! or synthesises on the client's behalf.
 
 use super::codec::{
-    EVT_DECORATION_CONFIGURE, EVT_TOPLEVEL_CLOSE, EVT_TOPLEVEL_CONFIGURE, REQ_BIND,
+    EVT_DECORATION_CONFIGURE, EVT_DELETE_ID, EVT_TOPLEVEL_CLOSE, EVT_TOPLEVEL_CONFIGURE, REQ_BIND,
     REQ_GET_LAYER_SURFACE, REQ_LAYER_ACK_CONFIGURE, REQ_LAYER_DESTROY, REQ_LAYER_GET_POPUP,
     REQ_LAYER_SET_ANCHOR, REQ_LAYER_SET_EXCLUSIVE_ZONE, REQ_LAYER_SET_KEYBOARD_INTERACTIVITY,
     REQ_LAYER_SET_MARGIN, REQ_LAYER_SET_SIZE,
@@ -306,6 +306,19 @@ pub(crate) fn sync_callback(new_id: u32) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, new_id);
     message(1, 0, &body)
+}
+
+/// `wl_display.delete_id(id)`, sent to the client when the object the proxy
+/// answered for is finally gone.
+///
+/// The reserved id's callback is consumed by the compositor long before the
+/// client is done with the object, so its own `delete_id` cannot be passed on:
+/// that would free the id while the client still has the object. The client is
+/// told here instead, when it destroys the object itself.
+pub(crate) fn delete_id(id: u32) -> Vec<u8> {
+    let mut body = Vec::new();
+    push_u32(&mut body, id);
+    message(1, EVT_DELETE_ID, &body)
 }
 
 #[cfg(test)]

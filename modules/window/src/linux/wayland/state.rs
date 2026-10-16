@@ -50,6 +50,21 @@ pub(crate) enum SurfaceRole {
     Toplevel { reported: bool },
 }
 
+/// What is left of an id the compositor reserved with a callback for a client
+/// object it was not allowed to create.
+///
+/// Both sides finish independently — the compositor when it answers the
+/// callback, the client when it destroys its object — so the id can only be
+/// released once both are done, and whichever finishes second does the
+/// releasing.
+#[derive(Default)]
+pub(crate) struct Reservation {
+    /// The client has destroyed the object it created under this id.
+    pub(crate) client_done: bool,
+    /// The compositor has consumed the callback that reserved the id.
+    pub(crate) callback_done: bool,
+}
+
 pub(crate) struct WaylandConn {
     pub(crate) ifaces: HashMap<u32, Iface>,
     pub(crate) pointer_focus: HashMap<u32, u32>,
@@ -95,6 +110,23 @@ pub(crate) struct WaylandConn {
     pub(crate) pending_to_client: Vec<Vec<u8>>,
     /// The role transaction currently open on this connection, if any.
     pub(crate) pending_role: Option<super::handlers::roles::PendingRole>,
+    /// A `get_xdg_surface` held until the window identity decides its role.
+    pub(crate) pending_xdg_surface: Option<super::handlers::roles::PendingXdgSurface>,
+    /// Ids the client owns that the compositor was never allowed to create an
+    /// object for, and that a callback reserved instead — a converted window's
+    /// `xdg_surface`, and every id of a client block that had to be dropped.
+    ///
+    /// Reserving is not optional: a suppressed `new_id` leaves a hole in the
+    /// compositor's object map at the edge it is still growing, and the id
+    /// allocated right after it is refused outright, which takes the whole
+    /// display connection down.
+    ///
+    /// The reservation has two lifetimes, not one. The callback is consumed by
+    /// the compositor as soon as it answers, while the client may keep its
+    /// object — or destroy it — for however long it likes, and either can
+    /// happen first. The id is released when both are done, and the callback's
+    /// events are hidden until then.
+    pub(crate) reservations: HashMap<u32, Reservation>,
 }
 
 impl WaylandConn {
@@ -126,6 +158,8 @@ impl WaylandConn {
             xdg_to_layer: HashMap::new(),
             pending_to_client: Vec::new(),
             pending_role: None,
+            pending_xdg_surface: None,
+            reservations: HashMap::new(),
         }
     }
 
@@ -157,6 +191,8 @@ impl WaylandConn {
         self.xdg_to_layer.clear();
         self.pending_to_client.clear();
         self.pending_role = None;
+        self.pending_xdg_surface = None;
+        self.reservations.clear();
     }
 
     pub(crate) fn alloc_injected_id(&mut self) -> Option<u32> {
@@ -166,6 +202,19 @@ impl WaylandConn {
     }
 
     pub(crate) fn purge(&mut self, id: u32) {
+        // A record of an id the compositor never created dies with the id. The
+        // client's destroy is the only thing left that can name it, and that is
+        // what reaches here.
+        self.reservations.remove(&id);
+        // A held creation for the surface being destroyed has nothing left to
+        // open.
+        if self
+            .pending_xdg_surface
+            .as_ref()
+            .is_some_and(|pending| pending.concerns(id))
+        {
+            self.pending_xdg_surface = None;
+        }
         match self.ifaces.get(&id).copied() {
             Some(Iface::WlPointer) => {
                 self.pointer_focus.remove(&id);

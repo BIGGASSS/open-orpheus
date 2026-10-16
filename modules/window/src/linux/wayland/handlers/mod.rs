@@ -69,6 +69,13 @@ fn dispatch_request_inner(
     if conn.xdg_to_layer.contains_key(&msg.object_id) {
         return shadow::on_client_xdg_surface_request(conn, msg);
     }
+    // An id the compositor was never allowed to create an object for: a
+    // converted window's xdg_surface, and every id of a client block that had
+    // to be dropped. The client destroys the toplevel first, which is what
+    // removes the mapping the branch above translates through.
+    if conn.reservations.contains_key(&msg.object_id) {
+        return shadow::on_reserved_id_request(conn, msg);
+    }
     // A decoration object the compositor has no toplevel for.
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::ZxdgToplevelDecoration) {
         return shadow::on_decoration_object_request(conn, msg);
@@ -168,7 +175,7 @@ mod tests {
         BTN_PRESSED, EVT_BUTTON, EVT_ENTER, EVT_LEAVE, EVT_TOUCH_DOWN, decorate_title,
     };
     use super::super::state::{WaylandConn, init_state};
-    use super::super::test_support::{message, wl_string, word};
+    use super::super::test_support::{message, serial, wl_string, word};
     use super::*;
 
     const FD: RawFd = 42;
@@ -258,6 +265,10 @@ mod tests {
 
     #[test]
     fn window_object_creation_links_the_whole_chain() {
+        // A role creation only decides synchronously while no layer policy is
+        // registered, so this has to be serialized with the tests that
+        // register one.
+        let _guard = serial();
         let mut conn = WaylandConn::new();
         let mut fx = Effects::default();
         conn.ifaces.insert(2, Iface::WlCompositor);
