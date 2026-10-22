@@ -8,8 +8,7 @@ use zbus::{
     interface,
     names::InterfaceName,
     object_server::{InterfaceRef, SignalEmitter},
-    zvariant::{DeserializeDict, ObjectPath, OwnedObjectPath, SerializeDict, Type, Value},
-    Connection,
+    Connection, DeserializeDict, ObjectPath, OwnedObjectPath, SerializeDict, Type, Variant,
 };
 
 use crate::media_session::{lock, EventDispatcher, MediaSessionEvents, PlaybackStatus};
@@ -124,25 +123,25 @@ impl Interface {
     }
 }
 
-#[derive(Default, Clone, DeserializeDict, SerializeDict, Type, Value)]
-#[zvariant(signature = "dict")]
+#[derive(Default, Clone, DeserializeDict, SerializeDict, Type, Variant)]
+#[zbus(signature = "dict")]
 #[napi(object)]
 pub struct MprisMetadata {
-    #[zvariant(rename = "mpris:trackid")]
+    #[zbus(rename = "mpris:trackid")]
     pub track_id: String,
-    #[zvariant(rename = "mpris:length")]
+    #[zbus(rename = "mpris:length")]
     pub length: Option<i64>,
-    #[zvariant(rename = "mpris:artUrl")]
+    #[zbus(rename = "mpris:artUrl")]
     pub art_url: Option<String>,
-    #[zvariant(rename = "xesam:album")]
+    #[zbus(rename = "xesam:album")]
     pub album: Option<String>,
-    #[zvariant(rename = "xesam:albumArtist")]
+    #[zbus(rename = "xesam:albumArtist")]
     pub album_artist: Option<Vec<String>>,
-    #[zvariant(rename = "xesam:artist")]
+    #[zbus(rename = "xesam:artist")]
     pub artist: Option<Vec<String>>,
-    #[zvariant(rename = "xesam:asText")]
+    #[zbus(rename = "xesam:asText")]
     pub lyrics: Option<String>,
-    #[zvariant(rename = "xesam:title")]
+    #[zbus(rename = "xesam:title")]
     pub title: Option<String>,
 }
 
@@ -152,24 +151,24 @@ pub struct MprisMetadata {
 /// (TS ↔ Rust) boundary, where `track_id` must stay a plain string. Here
 /// `mpris:trackid` must serialize as D-Bus type `o` (object path) per the
 /// MPRIS spec.
-#[derive(SerializeDict, Type, Value)]
-#[zvariant(signature = "dict")]
+#[derive(SerializeDict, Type, Variant)]
+#[zbus(signature = "dict")]
 pub struct MprisMetadataDict {
-    #[zvariant(rename = "mpris:trackid")]
+    #[zbus(rename = "mpris:trackid")]
     pub track_id: OwnedObjectPath,
-    #[zvariant(rename = "mpris:length")]
+    #[zbus(rename = "mpris:length")]
     pub length: Option<i64>,
-    #[zvariant(rename = "mpris:artUrl")]
+    #[zbus(rename = "mpris:artUrl")]
     pub art_url: Option<String>,
-    #[zvariant(rename = "xesam:album")]
+    #[zbus(rename = "xesam:album")]
     pub album: Option<String>,
-    #[zvariant(rename = "xesam:albumArtist")]
+    #[zbus(rename = "xesam:albumArtist")]
     pub album_artist: Option<Vec<String>>,
-    #[zvariant(rename = "xesam:artist")]
+    #[zbus(rename = "xesam:artist")]
     pub artist: Option<Vec<String>>,
-    #[zvariant(rename = "xesam:asText")]
+    #[zbus(rename = "xesam:asText")]
     pub lyrics: Option<String>,
-    #[zvariant(rename = "xesam:title")]
+    #[zbus(rename = "xesam:title")]
     pub title: Option<String>,
 }
 
@@ -438,7 +437,7 @@ pub async fn update_metadata(
 /// Emit the single `PropertiesChanged` for `Volume`.
 async fn emit_volume_changed(emitter: &SignalEmitter<'_>, volume: f64) -> Result<(), String> {
     let mut changed = HashMap::new();
-    changed.insert("Volume", Value::from(volume));
+    changed.insert("Volume", Variant::from(volume));
 
     zbus::fdo::Properties::properties_changed(
         emitter,
