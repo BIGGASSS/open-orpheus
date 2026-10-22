@@ -169,7 +169,7 @@ Issue 是反馈 Bug、提出功能建议或讨论项目方向的主要渠道。�
 
 ## 开发环境搭建
 
-如果你要参与开发，需要先准备好 Node 和 Rust（推荐 Node v24、Rust 1.96）。另外，请确保已添加 WebAssembly 编译目标并安装 `wasm-bindgen-cli`：
+如果你要参与开发，需要先准备好 Node 和 Rust（推荐 Node v24、Rust 1.99）。另外，请确保已添加 WebAssembly 编译目标并安装 `wasm-bindgen-cli`：
 
 ```sh
 rustup target add wasm32-unknown-unknown
