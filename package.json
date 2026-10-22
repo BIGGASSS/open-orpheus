@@ -44,7 +44,7 @@
     "@electron-forge/plugin-fuses": "^8.0.1",
     "@electron-forge/plugin-vite": "^8.0.1",
     "@electron/fuses": "catalog:",
-    "@keyv/sqlite": "6.0.0-beta.4",
+    "@keyv/sqlite": "6.1.0",
     "@open-orpheus/audio-effect": "workspace:*",
     "@types/audioworklet": "^0.0.100",
     "@types/ejs": "^3.1.5",
