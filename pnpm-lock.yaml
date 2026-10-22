@@ -184,6 +184,7 @@ overrides:
 
 patchedDependencies:
   '@keyv/sqlite': 297fdf51d1b1b0beb0cccc20ea2ffad0f7cd163dcb26041bb99a845b14c9babf
+  '@napi-rs/cross-toolchain': 9e81fb67fe8c01e147e979f9e7f570536a75913dfb4868cf03c35adc06b42211
 
 importers:
 
@@ -356,6 +357,12 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@25.9.9)(@vitest/coverage-v8@5.0.5)(vite@8.3.4(@types/node@25.9.9)(jiti@2.7.0))
     optionalDependencies:
+      '@napi-rs/cross-toolchain-arm64-target-aarch64':
+        specifier: ^1.0.3
+        version: 1.0.3
+      '@napi-rs/cross-toolchain-x64-target-x86_64':
+        specifier: ^1.0.3
+        version: 1.0.3
       '@open-orpheus/dbus':
         specifier: workspace:*
         version: link:modules/dbus
@@ -459,7 +466,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -486,7 +493,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -513,7 +520,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -540,7 +547,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -567,7 +574,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -594,7 +601,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -621,7 +628,7 @@ importers:
         version: 1.11.3
       '@napi-rs/cli':
         specifier: ^3.9.0
-        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)
+        version: 3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)
       '@oxc-node/core':
         specifier: ^0.1.0
         version: 0.1.7
@@ -1214,6 +1221,14 @@ packages:
         optional: true
       emnapi:
         optional: true
+
+  '@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3':
+    resolution: {integrity: sha512-GvroX8H9jzfZbOMnM92FQIR2LiXsQqgF9adCdhjMUYaf9icwue7HEBfxKmtfolrNs6y+AKoqyTg4nfHyh2gXjA==}
+    cpu: [arm64]
+
+  '@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3':
+    resolution: {integrity: sha512-AeSHGXbk3IaKmvXxHPzbCzIcSoXZiS8+atl2w6RBVYEWrWeWVBMktbnv44ekbFKjSffLtF5LC4xq2NmTqB49zQ==}
+    cpu: [x64]
 
   '@napi-rs/cross-toolchain@1.0.3':
     resolution: {integrity: sha512-ENPfLe4937bsKVTDA6zdABx4pq9w0tHqRrJHyaGxgaPq03a2Bd1unD5XSKjXJjebsABJ+MjAv1A2OvCgK9yehg==}
@@ -5320,10 +5335,10 @@ snapshots:
       - encoding
       - supports-color
 
-  '@napi-rs/cli@3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@types/node@24.19.2)':
+  '@napi-rs/cli@3.10.8(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)(@types/node@24.19.2)':
     dependencies:
       '@inquirer/prompts': 8.7.4(@types/node@24.19.2)
-      '@napi-rs/cross-toolchain': 1.0.3
+      '@napi-rs/cross-toolchain': 1.0.3(patch_hash=9e81fb67fe8c01e147e979f9e7f570536a75913dfb4868cf03c35adc06b42211)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)
       '@napi-rs/wasm-tools': 1.1.0
       '@octokit/rest': 22.0.1
       clipanion: 4.0.0-rc.4(typanion@3.14.0)
@@ -5351,11 +5366,20 @@ snapshots:
       - '@types/node'
       - supports-color
 
-  '@napi-rs/cross-toolchain@1.0.3':
+  '@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3':
+    optional: true
+
+  '@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3':
+    optional: true
+
+  '@napi-rs/cross-toolchain@1.0.3(patch_hash=9e81fb67fe8c01e147e979f9e7f570536a75913dfb4868cf03c35adc06b42211)(@napi-rs/cross-toolchain-arm64-target-aarch64@1.0.3)(@napi-rs/cross-toolchain-x64-target-x86_64@1.0.3)':
     dependencies:
       '@napi-rs/lzma': 1.5.1
       '@napi-rs/tar': 1.1.1
       debug: 4.4.3
+    optionalDependencies:
+      '@napi-rs/cross-toolchain-arm64-target-aarch64': 1.0.3
+      '@napi-rs/cross-toolchain-x64-target-x86_64': 1.0.3
     transitivePeerDependencies:
       - supports-color
 

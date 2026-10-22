@@ -14,6 +14,8 @@ allowBuilds:
 patchedDependencies:
   # Drop other adapter support, as we always use node:sqlite
   "@keyv/sqlite": patches/@keyv__sqlite.patch
+  # Make it search for toolchain in node_modules too
+  "@napi-rs/cross-toolchain": patches/@napi-rs__cross-toolchain.patch
 blockExoticSubdeps: false
 nodeLinker: hoisted
 overrides:
