@@ -169,7 +169,7 @@ Automated tests currently cover part of the project (`pnpm test`, with a coverag
 
 ## Development Setup
 
-You will need Node and Rust to work with this project (Node v24 and Rust 1.96 are recommended). Also, make sure to add the WebAssembly compilation target and install `wasm-bindgen-cli`:
+You will need Node and Rust to work with this project (Node v24 and Rust 1.99 are recommended). Also, make sure to add the WebAssembly compilation target and install `wasm-bindgen-cli`:
 
 ```sh
 rustup target add wasm32-unknown-unknown

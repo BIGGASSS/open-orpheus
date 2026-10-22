@@ -11,7 +11,7 @@
  */
 
 /** Rust toolchain installed into the Flatpak sandbox. */
-export const RUST_VERSION = "1.96.0";
+export const RUST_VERSION = "1.99.1";
 
 /** `cargo-zigbuild` — napi-rs shells out to it for cross builds. */
 export const CARGO_ZIGBUILD_VERSION = "0.23.4";

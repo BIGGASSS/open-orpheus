@@ -42,11 +42,6 @@ jobs:
           toolchain: ${{ vars.RUST_VERSION || 'stable' }}
           target: wasm32-unknown-unknown
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libfreetype-dev
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -55,15 +50,6 @@ jobs:
         run: |
           version=$(awk '/^wasm-bindgen =/ { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
           cargo install "wasm-bindgen-cli@$version"
-
-      - name: Install cross-compilation toolchain
-        shell: bash
-        run: |
-          cargo_zigbuild_version=$(sed -n 's/.*CARGO_ZIGBUILD_VERSION = "\([^"]*\)".*/\1/p' packaging/common/toolchain.ts)
-          zig_version=$(sed -n 's/.*ZIG_VERSION = "\([^"]*\)".*/\1/p' packaging/common/toolchain.ts)
-          cargo install --locked "cargo-zigbuild@$cargo_zigbuild_version"
-          # --break-system-packages: the Ubuntu images are PEP 668 managed.
-          pip install --break-system-packages "ziglang==$zig_version"
 
       - name: Build native modules
         run: pnpm build:modules
@@ -106,11 +92,6 @@ jobs:
           toolchain: ${{ vars.RUST_VERSION || 'stable' }}
           # cargo-llvm-cov needs llvm-cov/llvm-profdata from the toolchain.
           components: llvm-tools-preview
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libfreetype-dev
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

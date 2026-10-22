@@ -150,6 +150,7 @@ const config: ForgeConfig = {
         file.startsWith("/node_modules/.") ||
         file.startsWith("/node_modules/electron/") ||
         file.startsWith("/node_modules/electron-nightly/") ||
+        file.startsWith("/node_modules/@napi-rs/") ||
         (!file.startsWith("/package.json") &&
           !file.startsWith("/.vite") &&
           !file.startsWith("/node_modules"))
