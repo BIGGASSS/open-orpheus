@@ -71,9 +71,8 @@ async function readModuleInfos(modulesDir: string, moduleNames: string[]): Promi
  *
  * Modules may declare platform-specific variants of a script by appending
  * `:${process.platform}` — e.g. `build:linux` next to `build`. The variant wins
- * when present, so a module can opt into tooling that only exists on some
- * platforms (napi's `-x` needs cargo-zigbuild + zig, which we only provision on
- * Linux) while every other platform keeps the plain script.
+ * when present, so a module can opt into napi's prebuilt cross toolchain on
+ * Linux (`--use-napi-cross`) while every other platform keeps the plain script.
  *
  * Returns undefined when neither the variant nor the bare script exists.
  */
