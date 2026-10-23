@@ -289,6 +289,19 @@ app.on("ready", async () => {
       await import("./main/settings").then((m) => m.initialize());
     });
 
+    // Publish lyrics on D-Bus. Linux-only and fire-and-forget: the native
+    // module is loaded lazily, and startup must not wait for the session bus.
+    if (os.platform() === "linux") {
+      void import("./main/lyrics/dbus")
+        .then((m) => m.createDbusLyricsService())
+        .catch((err) =>
+          logger.warn(
+            { name: "dbus-lyrics", err: toError(err) },
+            "Failed to start the D-Bus lyrics service"
+          )
+        );
+    }
+
     await Promise.all([
       // Install the tray icon
       import("./main/tray"),
