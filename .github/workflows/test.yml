@@ -27,6 +27,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Resolve pinned Rust version
+        id: toolchain
+        uses: ./.github/actions/toolchain
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
 
@@ -39,7 +43,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: ${{ vars.RUST_VERSION || 'stable' }}
+          toolchain: ${{ steps.toolchain.outputs.rust }}
           target: wasm32-unknown-unknown
 
       - name: Install dependencies
@@ -86,10 +90,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Resolve pinned Rust version
+        id: toolchain
+        uses: ./.github/actions/toolchain
+
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: ${{ vars.RUST_VERSION || 'stable' }}
+          toolchain: ${{ steps.toolchain.outputs.rust }}
           # cargo-llvm-cov needs llvm-cov/llvm-profdata from the toolchain.
           components: llvm-tools-preview
 
