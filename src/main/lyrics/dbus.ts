@@ -39,6 +39,9 @@ async function create(): Promise<DbusLyricsService | null> {
   try {
     const { LyricsService } = await import("@open-orpheus/dbus");
     const service = new LyricsService(DBUS_LYRICS_BUS_NAME, DBUS_LYRICS_OBJECT_PATH);
+    // The constructor only validates arguments; connecting, registering the
+    // object, and requesting the bus name happen off the JS thread.
+    await service.start();
     const adapter = new DbusLyricsService({
       service,
       lyrics: lyricsDispatcher,

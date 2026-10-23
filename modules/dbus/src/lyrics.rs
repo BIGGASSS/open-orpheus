@@ -380,16 +380,24 @@ impl LyricsInterface {
     async fn track_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
-/// A session-bus lyrics service.
-///
-/// Constructing it connects to the session bus, registers the lyrics interface
-/// at `path` (default [`DEFAULT_OBJECT_PATH`]), and requests the well-known
-/// `name`. Failures throw, so the caller can degrade gracefully.
-#[napi]
-pub struct LyricsService {
+#[derive(Clone)]
+struct ServiceInner {
     conn: Connection,
     path: OwnedObjectPath,
+}
+
+/// A session-bus lyrics service.
+///
+/// The constructor only validates its arguments. Call [`LyricsService::start`]
+/// to connect to the session bus, register the interface at `path` (default
+/// [`DEFAULT_OBJECT_PATH`]), and request the well-known `name`. Startup is
+/// asynchronous so a slow bus never blocks the JavaScript thread.
+#[napi]
+pub struct LyricsService {
+    name: String,
+    path: OwnedObjectPath,
     state: Arc<StdMutex<LyricsState>>,
+    inner: Arc<StdMutex<Option<ServiceInner>>>,
     disposed: Arc<AtomicBool>,
 }
 
@@ -400,11 +408,18 @@ impl LyricsService {
         }
         Ok(())
     }
+
+    fn inner(&self) -> Result<ServiceInner> {
+        self.ensure_live()?;
+        lock(&self.inner).clone().ok_or_else(|| {
+            Error::from_reason("The lyrics service is not started; call start() first")
+        })
+    }
 }
 
 #[napi]
 impl LyricsService {
-    /// Connect to the session bus and serve the lyrics interface as `name`.
+    /// Create the service. Call [`LyricsService::start`] before using it.
     #[napi(constructor, ts_args_type = "name: string, path?: string")]
     pub fn new(name: String, path: Option<String>) -> Result<Self> {
         let path = path.unwrap_or_else(|| DEFAULT_OBJECT_PATH.to_string());
@@ -413,27 +428,82 @@ impl LyricsService {
                 "invalid lyrics service object path {path:?}: {error}"
             ))
         })?;
-        let path = OwnedObjectPath::from(path);
-
-        let state = Arc::new(StdMutex::new(LyricsState::default()));
-        let interface = LyricsInterface {
-            state: state.clone(),
-        };
-
-        let conn = smol::block_on::<zbus::Result<Connection>>(async {
-            let conn = Connection::session().await?;
-            conn.object_server().at(path.clone(), interface).await?;
-            conn.request_name_with_flags(name, RequestNameFlags::DO_NOT_QUEUE)
-                .await?;
-            Ok(conn)
-        })
-        .map_err(|error| Error::from_reason(error.description().unwrap_or_default()))?;
 
         Ok(Self {
-            conn,
-            path,
-            state,
+            name,
+            path: OwnedObjectPath::from(path),
+            state: Arc::new(StdMutex::new(LyricsState::default())),
+            inner: Arc::new(StdMutex::new(None)),
             disposed: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Connect to the session bus, register the interface, and request `name`.
+    ///
+    /// This is asynchronous: a slow bus must never block the JavaScript thread.
+    /// Calling it more than once is a no-op once the service is running.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn start<'a>(&'a self, env: &'a Env) -> Result<Object<'a>> {
+        self.ensure_live()?;
+
+        let name = self.name.clone();
+        let path = self.path.clone();
+        let state = self.state.clone();
+        let slot = self.inner.clone();
+        let disposed = self.disposed.clone();
+
+        napi_deferred_task!(env, async move {
+            if disposed.load(Ordering::SeqCst) {
+                return Err("The lyrics service is disposed".to_string());
+            }
+            if lock(&slot).is_some() {
+                return Ok::<(), String>(());
+            }
+
+            let conn = Connection::session()
+                .await
+                .map_err(|error| error.to_string())?;
+            conn.object_server()
+                .at(path.clone(), LyricsInterface { state })
+                .await
+                .map_err(|error| error.to_string())?;
+            conn.request_name_with_flags(name, RequestNameFlags::DO_NOT_QUEUE)
+                .await
+                .map_err(|error| error.to_string())?;
+
+            enum Outcome {
+                Stored,
+                AlreadyStarted,
+                Disposed,
+            }
+
+            // The guard is dropped before any await below.
+            let outcome = {
+                let mut inner = lock(&slot);
+                if disposed.load(Ordering::SeqCst) {
+                    Outcome::Disposed
+                } else if inner.is_some() {
+                    Outcome::AlreadyStarted
+                } else {
+                    *inner = Some(ServiceInner {
+                        conn: conn.clone(),
+                        path: path.clone(),
+                    });
+                    Outcome::Stored
+                }
+            };
+
+            match outcome {
+                Outcome::Stored => Ok(()),
+                Outcome::AlreadyStarted => {
+                    let _ = conn.close().await;
+                    Ok(())
+                }
+                Outcome::Disposed => {
+                    let _ = conn.close().await;
+                    Err("The lyrics service was disposed during startup".to_string())
+                }
+            }
         })
     }
 
@@ -446,13 +516,11 @@ impl LyricsService {
         env: &'a Env,
         track: Option<DbusLyricsTrack>,
     ) -> Result<Object<'a>> {
-        self.ensure_live()?;
-        let conn = self.conn.clone();
-        let path = self.path.clone();
+        let inner = self.inner()?;
         let state = self.state.clone();
 
         napi_deferred_task!(env, async move {
-            update_track(&conn, &path, &state, track).await
+            update_track(&inner.conn, &inner.path, &state, track).await
         })
     }
 
@@ -467,13 +535,11 @@ impl LyricsService {
         lyrics: Option<DbusLyricsDocument>,
         slogan: Option<String>,
     ) -> Result<Object<'a>> {
-        self.ensure_live()?;
-        let conn = self.conn.clone();
-        let path = self.path.clone();
+        let inner = self.inner()?;
         let state = self.state.clone();
 
         napi_deferred_task!(env, async move {
-            update_lyrics(&conn, &path, &state, lyrics, slogan).await
+            update_lyrics(&inner.conn, &inner.path, &state, lyrics, slogan).await
         })
     }
 
@@ -482,14 +548,22 @@ impl LyricsService {
     /// Calling this more than once is a no-op.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn dispose<'a>(&'a self, env: &'a Env) -> Result<Object<'a>> {
-        let conn = self.conn.clone();
+        let slot = self.inner.clone();
         let disposed = self.disposed.clone();
 
         napi_deferred_task!(env, async move {
             if disposed.swap(true, Ordering::SeqCst) {
-                return Ok(());
+                return Ok::<(), String>(());
             }
-            conn.close().await.map_err(|error| error.to_string())
+            let inner = lock(&slot).take();
+            if let Some(inner) = inner {
+                inner
+                    .conn
+                    .close()
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok::<(), String>(())
         })
     }
 }

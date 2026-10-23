@@ -60,13 +60,21 @@ export declare class DbusSubscription {
 /**
  * A session-bus lyrics service.
  *
- * Constructing it connects to the session bus, registers the lyrics interface
- * at `path` (default [`DEFAULT_OBJECT_PATH`]), and requests the well-known
- * `name`. Failures throw, so the caller can degrade gracefully.
+ * The constructor only validates its arguments. Call [`LyricsService::start`]
+ * to connect to the session bus, register the interface at `path` (default
+ * [`DEFAULT_OBJECT_PATH`]), and request the well-known `name`. Startup is
+ * asynchronous so a slow bus never blocks the JavaScript thread.
  */
 export declare class LyricsService {
-  /** Connect to the session bus and serve the lyrics interface as `name`. */
+  /** Create the service. Call [`LyricsService::start`] before using it. */
   constructor(name: string, path?: string)
+  /**
+   * Connect to the session bus, register the interface, and request `name`.
+   *
+   * This is asynchronous: a slow bus must never block the JavaScript thread.
+   * Calling it more than once is a no-op once the service is running.
+   */
+  start(): Promise<void>
   /**
    * Replace the current track metadata and duration.
    *

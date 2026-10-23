@@ -149,6 +149,8 @@ use MPRIS for position/rate.
 import { LyricsService } from "@open-orpheus/dbus";
 
 const service = new LyricsService("io.github.yucling.OpenOrpheus");
+// Connect, register the object, and request the name off the JS thread.
+await service.start();
 await service.setTrack({ id: "1", title: "…", artist: "…", album: "…", duration: 240_000 });
 await service.setLyrics({ regular: [/* … */] }, null);
 // … later

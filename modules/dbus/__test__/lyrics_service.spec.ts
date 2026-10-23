@@ -21,10 +21,11 @@ let counter = 0;
 const services: LyricsService[] = [];
 const clients: DbusClient[] = [];
 
-/** A fresh lyrics service; each test owns its own well-known bus name. */
-function newService(): { service: LyricsService; destination: string } {
+/** A fresh, started lyrics service; each test owns its own well-known bus name. */
+async function newService(): Promise<{ service: LyricsService; destination: string }> {
   const name = `io.github.yucling.OpenOrpheus.test.p${process.pid}.t${counter++}`;
   const service = new LyricsService(name);
+  await service.start();
   services.push(service);
   return { service, destination: name };
 }
@@ -41,9 +42,12 @@ test.after.always(async () => {
 });
 
 /** Wait until `predicate` holds, failing if it never does. */
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 5_000
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error("timed out waiting for a signal");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -84,8 +88,33 @@ const document = {
   ],
 };
 
+serial("does not own the bus name until start()", async (t) => {
+  const name = `io.github.yucling.OpenOrpheus.test.p${process.pid}.t${counter++}`;
+  const service = new LyricsService(name);
+  services.push(service);
+  const client = newClient();
+
+  const before = await client.call({
+    ...BUS,
+    method: "NameHasOwner",
+    signature: "s",
+    body: [name],
+  });
+  t.is(before.body[0], false);
+
+  await service.start();
+
+  const after = await client.call({
+    ...BUS,
+    method: "NameHasOwner",
+    signature: "s",
+    body: [name],
+  });
+  t.is(after.body[0], true);
+});
+
 serial("publishes lyrics, track properties, and line lookups", async (t) => {
-  const { service, destination } = newService();
+  const { service, destination } = await newService();
   const client = newClient();
 
   await service.setTrack({
@@ -150,7 +179,7 @@ serial("publishes lyrics, track properties, and line lookups", async (t) => {
 });
 
 serial("publishes a slogan without lyrics", async (t) => {
-  const { service, destination } = newService();
+  const { service, destination } = await newService();
   const client = newClient();
 
   await service.setLyrics(null, "enjoy the music");
@@ -168,7 +197,7 @@ serial("publishes a slogan without lyrics", async (t) => {
 });
 
 serial("emits LyricsChanged when the lyrics change", async (t) => {
-  const { service, destination } = newService();
+  const { service, destination } = await newService();
   const client = newClient();
   let changes = 0;
 
@@ -188,18 +217,21 @@ serial("emits LyricsChanged when the lyrics change", async (t) => {
 });
 
 serial("releases the well-known name on dispose", async (t) => {
-  const { service, destination } = newService();
+  const { service, destination } = await newService();
   const client = newClient();
 
   await service.dispose();
 
-  const reply = await client.call({
-    ...BUS,
-    method: "NameHasOwner",
-    signature: "s",
-    body: [destination],
+  await waitFor(async () => {
+    const reply = await client.call({
+      ...BUS,
+      method: "NameHasOwner",
+      signature: "s",
+      body: [destination],
+    });
+    return reply.body[0] === false;
   });
-  t.is(reply.body[0], false);
+  t.pass();
 });
 
 serial("rejects an invalid object path", (t) => {
@@ -210,7 +242,7 @@ serial("rejects an invalid object path", (t) => {
 });
 
 serial("exposes the standard Properties interface", async (t) => {
-  const { service, destination } = newService();
+  const { service, destination } = await newService();
   const client = newClient();
   await service.setLyrics(document, null);
 

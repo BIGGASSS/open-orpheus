@@ -9,8 +9,9 @@ const logger = installLoggerStub();
 const hoisted = vi.hoisted(() => ({
   constructorArgs: null as unknown[] | null,
   constructorCalls: 0,
-  failConstructor: false,
+  failStart: false,
   instance: null as null | {
+    start: ReturnType<typeof vi.fn>;
     setTrack: ReturnType<typeof vi.fn>;
     setLyrics: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
@@ -23,7 +24,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   hoisted.constructorArgs = null;
   hoisted.constructorCalls = 0;
-  hoisted.failConstructor = false;
+  hoisted.failStart = false;
   hoisted.instance = null;
   hoisted.tasks.length = 0;
 
@@ -52,12 +53,14 @@ beforeEach(() => {
 
   vi.doMock("@open-orpheus/dbus", () => ({
     LyricsService: class {
+      readonly start = vi.fn(async () => {
+        if (hoisted.failStart) throw new Error("no session bus");
+      });
       readonly setTrack = vi.fn(async () => {});
       readonly setLyrics = vi.fn(async () => {});
       readonly dispose = vi.fn(async () => {});
 
       constructor(...args: unknown[]) {
-        if (hoisted.failConstructor) throw new Error("no session bus");
         hoisted.constructorCalls += 1;
         hoisted.constructorArgs = args;
         hoisted.instance = this;
@@ -92,6 +95,7 @@ describe("createDbusLyricsService", () => {
     expect(adapter).not.toBeNull();
     expect(hoisted.constructorArgs).toEqual([DBUS_LYRICS_BUS_NAME, DBUS_LYRICS_OBJECT_PATH]);
     expect(hoisted.constructorCalls).toBe(1);
+    expect(hoisted.instance?.start).toHaveBeenCalledTimes(1);
   });
 
   it("returns the same adapter on repeated calls", async () => {
@@ -116,7 +120,7 @@ describe("createDbusLyricsService", () => {
   });
 
   it("logs and returns null when the native service cannot start", async () => {
-    hoisted.failConstructor = true;
+    hoisted.failStart = true;
     const { createDbusLyricsService } = await loadFactory();
 
     await expect(createDbusLyricsService()).resolves.toBeNull();
