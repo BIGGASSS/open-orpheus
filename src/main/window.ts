@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from "electron";
 import type { BrowserWindowConstructorOptions } from "electron";
 import Emittery from "emittery";
+import { merge } from "es-toolkit";
 
 import {
   decorateWindowTitle,
@@ -386,7 +387,12 @@ export abstract class ManagedWindow<
     if (title !== undefined) this._title = title;
     let wnd: BrowserWindow;
     try {
-      wnd = new BrowserWindow({ ...rest, title: this.decoratedTitle() });
+      wnd = new BrowserWindow(
+        merge(merge({}, rest), {
+          title: this.decoratedTitle(),
+          webPreferences: { disableWakeLocks: true },
+        })
+      );
     } catch (error) {
       // The policy may have been registered before the window existed; a window
       // that was never created must not leave one behind.
