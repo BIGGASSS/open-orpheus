@@ -255,8 +255,20 @@ export interface MprisMetadata {
 
 export interface PlaybackState {
   status: PlaybackStatus
+  /** Position in microseconds at the moment this update was produced. */
   position: number
   speed?: number
+  /**
+   * Whether the position is currently advancing. Defaults to
+   * `status == Playing`; `false` freezes the reported position during
+   * buffering stalls without changing the MPRIS playback status.
+   */
+  advancing?: boolean
+  /**
+   * True when `position` comes from a seek and is authoritative even if the
+   * previous clock was paused. Defaults to `false`.
+   */
+  seeked?: boolean
 }
 
 export declare const enum PlaybackStatus {

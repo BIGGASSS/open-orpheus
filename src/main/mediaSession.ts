@@ -96,6 +96,7 @@ export async function createMediaSession(): Promise<void> {
   playbackController.on("trackchanged", ({ data }) => adapter.onTrack(data));
   playbackController.on("coverchanged", ({ data }) => adapter.onArtwork(data));
   playbackController.on("statuschanged", ({ data }) => adapter.onStatus(data));
+  playbackController.on("advancingchange", ({ data }) => adapter.onAdvancing(data));
   playbackController.on("positionchanged", ({ data }) =>
     adapter.onPosition(data.position, data.seeked)
   );

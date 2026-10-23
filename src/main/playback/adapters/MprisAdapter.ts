@@ -29,6 +29,12 @@ export default class MprisAdapter
   private duration: number | null = null;
   private rate = 1;
   /**
+   * Whether the position clock is running. Kept separate from `status`
+   * because a buffering stall keeps MPRIS `PlaybackStatus` as `Playing`
+   * while the position must stand still.
+   */
+  private advancing = true;
+  /**
    * The most recent MPRIS volume write, keyed by the value it was for. The
    * native write is asynchronous, so `SetVolume` awaits the write for *its*
    * value once the renderer has confirmed that value — a write triggered by
@@ -92,6 +98,9 @@ export default class MprisAdapter
   onTrack(track: TrackInfo | null): void {
     this.metadata = track;
     this.artUrl = null; // album art for a new song arrives separately (onArtwork)
+    // A new track starts at zero; keeping the previous song's position would
+    // report it until the next throttled update.
+    this.position = track ? 0 : null;
     if (!track) {
       void this.mediaSession.setMetadata(null);
       return;
@@ -101,12 +110,22 @@ export default class MprisAdapter
 
   onStatus(status: PlaybackStatus): void {
     this.status = status;
+    this.advancing = status === PlaybackStatus.Playing;
+    this.pushPlaybackState();
+  }
+
+  onAdvancing(advancing: boolean): void {
+    if (this.advancing === advancing) return;
+    this.advancing = advancing;
     this.pushPlaybackState();
   }
 
   onPosition(position: number, seeked: boolean): void {
     this.position = position;
-    this.pushPlaybackState();
+    // A seek while playing is a discontinuity, not a pause: the `seeking`
+    // event may have frozen the clock without a following `playing` event.
+    if (seeked && this.status === PlaybackStatus.Playing) this.advancing = true;
+    this.pushPlaybackState(seeked);
     if (seeked) {
       void this.mediaSession.sendSeeked(position * TIME_RATIO);
     }
@@ -192,12 +211,14 @@ export default class MprisAdapter
     }
   }
 
-  private pushPlaybackState(): void {
+  private pushPlaybackState(seeked = false): void {
     if (this.position === null) return;
     void this.mediaSession.updatePlaybackState({
       status: toDbusStatus(this.status),
       position: this.position * TIME_RATIO,
       speed: this.rate,
+      advancing: this.advancing,
+      seeked,
     });
   }
 }

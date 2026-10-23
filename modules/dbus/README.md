@@ -122,6 +122,14 @@ The handler is free to call back into `MediaSession` (for example to report the
 new `volume` from `setVolume`) while a command is in flight. Property updates
 go through shared state and never wait on an in-flight command.
 
+MPRIS `Position` is extrapolated in the native service from the last reported
+position, playback rate, and the optional `advancing` flag, so clients polling
+it between the throttled updates see the current position rather than a stale
+value. `updatePlaybackState` also accepts `seeked`, which makes the supplied
+position authoritative even when playback is paused. Set `advancing: false`
+during a buffering stall to freeze the clock without changing
+`PlaybackStatus`.
+
 ## Lyrics service
 
 `LyricsService` serves a read-only lyrics interface on the session bus:

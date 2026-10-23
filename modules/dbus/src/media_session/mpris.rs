@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
 
 use napi_derive::napi;
 use zbus::{
@@ -18,8 +19,16 @@ const NO_TRACK_OBJECT_PATH: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 #[napi(object)]
 pub struct PlaybackState {
     pub status: PlaybackStatus,
+    /// Position in microseconds at the moment this update was produced.
     pub position: i64,
     pub speed: Option<f64>,
+    /// Whether the position is currently advancing. Defaults to
+    /// `status == Playing`; `false` freezes the reported position during
+    /// buffering stalls without changing the MPRIS playback status.
+    pub advancing: Option<bool>,
+    /// True when `position` comes from a seek and is authoritative even if the
+    /// previous clock was paused. Defaults to `false`.
+    pub seeked: Option<bool>,
 }
 
 /// Mutable MPRIS properties.
@@ -34,6 +43,10 @@ pub struct PlaybackState {
 pub struct PlayerState {
     pub volume: f64,
     pub playback_state: Option<PlaybackState>,
+    /// When `playback_state.position` was sampled. MPRIS `Position` is
+    /// interpolated from this anchor so clients polling between the 1 Hz
+    /// updates see the current position instead of a stale staircase.
+    pub playback_updated_at: Instant,
     pub metadata: Option<MprisMetadata>,
 }
 
@@ -42,9 +55,86 @@ impl PlayerState {
         Self {
             volume: 1.0,
             playback_state: None,
+            playback_updated_at: Instant::now(),
             metadata: None,
         }
     }
+
+    /// The position at `now`, extrapolated from the last anchor.
+    ///
+    /// `advancing` is deliberately separate from `status`: a buffering stall
+    /// keeps MPRIS `PlaybackStatus` as `Playing` while the position must stand
+    /// still. The last known position is returned when the clock is frozen.
+    fn position_at(&self, now: Instant) -> i64 {
+        let Some(playback) = self.playback_state.as_ref() else {
+            return 0;
+        };
+
+        let advancing = playback
+            .advancing
+            .unwrap_or(playback.status == PlaybackStatus::Playing);
+        let raw_position = if advancing {
+            let speed = playback.speed.unwrap_or(1.0);
+            let elapsed = now
+                .saturating_duration_since(self.playback_updated_at)
+                .as_secs_f64();
+            playback.position as f64 + elapsed * speed * 1_000_000.0
+        } else {
+            playback.position as f64
+        };
+
+        let position = raw_position.max(0.0).round() as i64;
+        match self.metadata.as_ref().and_then(|metadata| metadata.length) {
+            Some(length) if length >= 0 => position.min(length),
+            _ => position,
+        }
+    }
+}
+
+/// Merge a new playback update with the previous clock.
+///
+/// The incoming `position` is only a synchronization point: it is used for a
+/// periodic update while playing, or when the caller explicitly seeks. Pause,
+/// rate changes, stalls, and resume must start from the position the previous
+/// clock had reached at `now`, because the incoming position is then stale by
+/// up to one update interval.
+fn anchored_playback_state(
+    previous: Option<&PlaybackState>,
+    previous_position_at_now: i64,
+    mut incoming: PlaybackState,
+) -> PlaybackState {
+    let seeked = incoming.seeked.unwrap_or(false);
+    let status = incoming.status;
+    let speed = incoming.speed.unwrap_or(1.0);
+    let advancing = status == PlaybackStatus::Playing && incoming.advancing.unwrap_or(true);
+
+    let previous_playing = previous.is_some_and(|state| state.status == PlaybackStatus::Playing);
+    let previous_advancing = previous.is_some_and(|state| {
+        state
+            .advancing
+            .unwrap_or(state.status == PlaybackStatus::Playing)
+    });
+    let previous_speed = previous.and_then(|state| state.speed).unwrap_or(1.0);
+
+    // A normal position update while the clock is running. Seeks are also
+    // authoritative because the caller knows the discontinuity happened.
+    let is_periodic_sync = previous_playing
+        && previous_advancing
+        && status == PlaybackStatus::Playing
+        && advancing
+        && (speed - previous_speed).abs() < f64::EPSILON;
+
+    let position = if seeked || previous.is_none() || is_periodic_sync {
+        incoming.position
+    } else {
+        previous_position_at_now
+    };
+
+    incoming.position = position;
+    incoming.speed = Some(speed);
+    incoming.advancing = Some(advancing);
+    incoming.seeked = None;
+    incoming
 }
 
 pub struct Interface {
@@ -325,11 +415,7 @@ impl PlayerInterface {
 
     #[zbus(property)]
     async fn position(&self) -> i64 {
-        lock(&self.state)
-            .playback_state
-            .as_ref()
-            .map(|x| x.position)
-            .unwrap_or(0)
+        lock(&self.state).position_at(Instant::now())
     }
 
     #[zbus(property)]
@@ -400,7 +486,22 @@ pub async fn update_metadata(
     let (metadata_was_available, metadata_is_available) = {
         let mut state = lock(state);
         let was_available = state.metadata.is_some();
+        let track_changed = state
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.track_id.as_str())
+            != metadata.as_ref().map(|metadata| metadata.track_id.as_str());
+
         state.metadata = metadata;
+        if track_changed {
+            // A new track starts at zero. Keeping the previous song's anchor
+            // would report the old position until the next 1 Hz update.
+            if let Some(playback) = state.playback_state.as_mut() {
+                playback.position = 0;
+            }
+            state.playback_updated_at = Instant::now();
+        }
+
         (was_available, state.metadata.is_some())
     };
 
@@ -475,14 +576,25 @@ pub async fn update_playback_state(
     let emitter = iface_ref.signal_emitter();
 
     let (state_was_available, state_is_available, prev_status, new_status, prev_speed, new_speed) = {
+        let now = Instant::now();
         let mut state = lock(state);
+        let previous_position_at_now = state.position_at(now);
         let was_available = state.playback_state.is_some();
         let prev_status = state.playback_state.as_ref().map(|x| x.status);
         let prev_speed = state.playback_state.as_ref().and_then(|x| x.speed);
-        let new_status = playback_state.as_ref().map(|x| x.status);
-        let new_speed = playback_state.as_ref().and_then(|x| x.speed);
 
-        state.playback_state = playback_state;
+        let next = playback_state.map(|incoming| {
+            anchored_playback_state(
+                state.playback_state.as_ref(),
+                previous_position_at_now,
+                incoming,
+            )
+        });
+        let new_status = next.as_ref().map(|x| x.status);
+        let new_speed = next.as_ref().and_then(|x| x.speed);
+
+        state.playback_state = next;
+        state.playback_updated_at = now;
         (
             was_available,
             state.playback_state.is_some(),
@@ -534,3 +646,182 @@ pub struct TrackListInterface {}
 
 #[interface(name = "org.mpris.MediaPlayer2.TrackList")]
 impl TrackListInterface {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn playback(
+        status: PlaybackStatus,
+        position: i64,
+        speed: f64,
+        advancing: bool,
+    ) -> PlaybackState {
+        PlaybackState {
+            status,
+            position,
+            speed: Some(speed),
+            advancing: Some(advancing),
+            seeked: None,
+        }
+    }
+
+    fn player_state(playback: PlaybackState, elapsed: Duration) -> PlayerState {
+        PlayerState {
+            volume: 1.0,
+            playback_state: Some(playback),
+            playback_updated_at: Instant::now() - elapsed,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn position_interpolates_while_playing() {
+        let state = player_state(
+            playback(PlaybackStatus::Playing, 1_000_000, 1.0, true),
+            Duration::from_millis(500),
+        );
+
+        let position = state.position_at(Instant::now());
+        assert!(
+            (position - 1_500_000).abs() < 20_000,
+            "expected about 1.5 s, got {position} µs"
+        );
+    }
+
+    #[test]
+    fn position_freezes_when_paused() {
+        let state = player_state(
+            playback(PlaybackStatus::Paused, 1_000_000, 1.0, false),
+            Duration::from_secs(2),
+        );
+
+        assert_eq!(state.position_at(Instant::now()), 1_000_000);
+    }
+
+    #[test]
+    fn position_freezes_when_not_advancing() {
+        let state = player_state(
+            // A buffering stall keeps the MPRIS status as Playing.
+            playback(PlaybackStatus::Playing, 1_000_000, 1.0, false),
+            Duration::from_secs(2),
+        );
+
+        assert_eq!(state.position_at(Instant::now()), 1_000_000);
+    }
+
+    #[test]
+    fn position_respects_playback_rate() {
+        let state = player_state(
+            playback(PlaybackStatus::Playing, 1_000_000, 2.0, true),
+            Duration::from_millis(500),
+        );
+
+        let position = state.position_at(Instant::now());
+        assert!(
+            (position - 2_000_000).abs() < 20_000,
+            "expected about 2 s, got {position} µs"
+        );
+    }
+
+    #[test]
+    fn position_clamps_to_track_length() {
+        let mut state = player_state(
+            playback(PlaybackStatus::Playing, 1_000_000, 1.0, true),
+            Duration::from_millis(500),
+        );
+        state.metadata = Some(MprisMetadata {
+            length: Some(1_200_000),
+            ..Default::default()
+        });
+
+        assert_eq!(state.position_at(Instant::now()), 1_200_000);
+    }
+
+    #[test]
+    fn position_is_zero_without_playback() {
+        assert_eq!(PlayerState::new().position_at(Instant::now()), 0);
+    }
+
+    #[test]
+    fn periodic_update_uses_incoming_position() {
+        let previous = playback(PlaybackStatus::Playing, 1_000_000, 1.0, true);
+        let incoming = playback(PlaybackStatus::Playing, 1_500_000, 1.0, true);
+
+        let next = anchored_playback_state(Some(&previous), 1_400_000, incoming);
+        assert_eq!(next.position, 1_500_000);
+        assert_eq!(next.advancing, Some(true));
+        assert_eq!(next.seeked, None);
+    }
+
+    #[test]
+    fn pause_uses_the_previous_clock_position() {
+        let previous = playback(PlaybackStatus::Playing, 1_000_000, 1.0, true);
+        // The adapter's cached position is stale at pause time.
+        let incoming = playback(PlaybackStatus::Paused, 1_000_000, 1.0, false);
+
+        let next = anchored_playback_state(Some(&previous), 1_600_000, incoming);
+        assert_eq!(next.position, 1_600_000);
+        assert_eq!(next.advancing, Some(false));
+    }
+
+    #[test]
+    fn seek_is_authoritative_even_when_paused() {
+        let previous = playback(PlaybackStatus::Paused, 1_000_000, 1.0, false);
+        let mut incoming = playback(PlaybackStatus::Paused, 30_000_000, 1.0, false);
+        incoming.seeked = Some(true);
+
+        let next = anchored_playback_state(Some(&previous), 1_000_000, incoming);
+        assert_eq!(next.position, 30_000_000);
+        assert_eq!(next.advancing, Some(false));
+    }
+
+    #[test]
+    fn rate_change_uses_the_previous_clock_position() {
+        let previous = playback(PlaybackStatus::Playing, 1_000_000, 1.0, true);
+        // The adapter's cached position is stale when the rate changes.
+        let incoming = playback(PlaybackStatus::Playing, 1_000_000, 2.0, true);
+
+        let next = anchored_playback_state(Some(&previous), 1_700_000, incoming);
+        assert_eq!(next.position, 1_700_000);
+        assert_eq!(next.speed, Some(2.0));
+    }
+
+    #[test]
+    fn stall_freezes_at_the_previous_clock_position() {
+        let previous = playback(PlaybackStatus::Playing, 1_000_000, 1.0, true);
+        let incoming = playback(PlaybackStatus::Playing, 1_000_000, 1.0, false);
+
+        let next = anchored_playback_state(Some(&previous), 1_700_000, incoming);
+        assert_eq!(next.position, 1_700_000);
+        assert_eq!(next.advancing, Some(false));
+    }
+
+    #[test]
+    fn resume_uses_the_frozen_previous_position() {
+        let previous = playback(PlaybackStatus::Paused, 1_500_000, 1.0, false);
+        let incoming = playback(PlaybackStatus::Playing, 1_400_000, 1.0, true);
+
+        let next = anchored_playback_state(Some(&previous), 1_500_000, incoming);
+        assert_eq!(next.position, 1_500_000);
+        assert_eq!(next.advancing, Some(true));
+    }
+
+    #[test]
+    fn first_update_uses_the_incoming_position() {
+        let incoming = playback(PlaybackStatus::Playing, 1_500_000, 1.0, true);
+
+        let next = anchored_playback_state(None, 0, incoming);
+        assert_eq!(next.position, 1_500_000);
+        assert_eq!(next.advancing, Some(true));
+    }
+
+    #[test]
+    fn advancing_is_forced_off_when_not_playing() {
+        let incoming = playback(PlaybackStatus::Paused, 1_000_000, 1.0, true);
+
+        let next = anchored_playback_state(None, 0, incoming);
+        assert_eq!(next.advancing, Some(false));
+    }
+}

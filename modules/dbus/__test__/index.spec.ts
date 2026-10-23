@@ -64,9 +64,19 @@ async function getProperty(destination: string, property: string): Promise<strin
     PLAYER_INTERFACE,
     property,
   ]);
-  // `gdbus` renders values as `(<0.25>,)` / `(<'Playing'>,)`.
-  return stdout.replace(/[()<>',]/g, "").trim();
+  // `gdbus` renders values as `(<0.25>,)` / `(<'Playing'>,)`, and 64-bit
+  // integers with an explicit type tag (`<int64 123>`).
+  return stdout
+    .replace(/[()<>',]/g, "")
+    .replace(/\b(?:u?int(?:8|16|32|64))\b/g, "")
+    .trim();
 }
+
+async function getPosition(destination: string): Promise<number> {
+  return Number(await getProperty(destination, "Position"));
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function errorText(error: unknown): string {
   const { stderr, message } = error as { stderr?: string; message?: string };
@@ -160,4 +170,107 @@ serial("reports a missing handler instead of hanging", async (t) => {
   const error = await t.throwsAsync(callPlayer(destination, "Play"));
   t.regex(errorText(error), /No media session event handler is registered/);
   t.truthy(session);
+});
+
+serial("interpolates Position between the throttled updates", async (t) => {
+  const { session, destination } = newSession();
+
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Playing,
+    position: 1_000_000,
+    speed: 1,
+    advancing: true,
+  });
+
+  const first = await getPosition(destination);
+  await sleep(250);
+  const second = await getPosition(destination);
+  const delta = second - first;
+
+  t.true(delta >= 100_000, `Position only advanced ${delta} µs`);
+  t.true(delta < 900_000, `Position advanced a full stale interval: ${delta} µs`);
+});
+
+serial("freezes Position while paused and does not trust the stale pause position", async (t) => {
+  const { session, destination } = newSession();
+
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Playing,
+    position: 2_000_000,
+    speed: 1,
+    advancing: true,
+  });
+  await sleep(200);
+
+  // The adapter's cached position is stale at pause time; the native clock
+  // must freeze where it actually reached instead.
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Paused,
+    position: 2_000_000,
+    speed: 1,
+    advancing: false,
+  });
+
+  const paused = await getPosition(destination);
+  t.true(paused >= 2_100_000, `pause froze too early at ${paused} µs`);
+
+  await sleep(250);
+  t.is(await getPosition(destination), paused);
+});
+
+serial("freezes Position during a buffering stall without changing the status", async (t) => {
+  const { session, destination } = newSession();
+
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Playing,
+    position: 1_000_000,
+    speed: 1,
+    advancing: true,
+  });
+  await sleep(150);
+
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Playing,
+    position: 1_000_000,
+    speed: 1,
+    advancing: false,
+  });
+
+  const stalled = await getPosition(destination);
+  t.true(stalled >= 1_100_000, `stall froze too early at ${stalled} µs`);
+  t.is(await getProperty(destination, "PlaybackStatus"), "Playing");
+
+  await sleep(250);
+  t.is(await getPosition(destination), stalled);
+});
+
+serial("treats a paused seek as authoritative", async (t) => {
+  const { session, destination } = newSession();
+
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Paused,
+    position: 30_000_000,
+    speed: 1,
+    advancing: false,
+    seeked: true,
+  });
+
+  t.is(await getPosition(destination), 30_000_000);
+});
+
+serial("resets Position when the track changes", async (t) => {
+  const { session, destination } = newSession();
+
+  await session.setMetadata({ trackId: "/com/163/music/1" });
+  await session.updatePlaybackState({
+    status: PlaybackStatus.Playing,
+    position: 50_000_000,
+    speed: 1,
+    advancing: true,
+  });
+
+  await session.setMetadata({ trackId: "/com/163/music/2" });
+  const position = await getPosition(destination);
+
+  t.true(position < 200_000, `new track started at ${position} µs`);
 });
