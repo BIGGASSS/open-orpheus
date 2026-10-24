@@ -57,6 +57,45 @@ export declare class DbusSubscription {
   get active(): boolean
 }
 
+/**
+ * A session-bus lyrics service.
+ *
+ * The constructor only validates its arguments. Call [`LyricsService::start`]
+ * to connect to the session bus, register the interface at `path` (default
+ * [`DEFAULT_OBJECT_PATH`]), and request the well-known `name`. Startup is
+ * asynchronous so a slow bus never blocks the JavaScript thread.
+ */
+export declare class LyricsService {
+  /** Create the service. Call [`LyricsService::start`] before using it. */
+  constructor(name: string, path?: string)
+  /**
+   * Connect to the session bus, register the interface, and request `name`.
+   *
+   * This is asynchronous: a slow bus must never block the JavaScript thread.
+   * Calling it more than once is a no-op once the service is running.
+   */
+  start(): Promise<void>
+  /**
+   * Replace the current track metadata and duration.
+   *
+   * `duration` is in milliseconds. Only changed properties emit signals.
+   */
+  setTrack(track?: DbusLyricsTrack | undefined | null): Promise<void>
+  /**
+   * Replace the current lyrics document and slogan together.
+   *
+   * Sending the two atomically avoids a transient state where one has
+   * changed and the other has not. Only changed properties emit signals.
+   */
+  setLyrics(lyrics?: DbusLyricsDocument | undefined | null, slogan?: string | undefined | null): Promise<void>
+  /**
+   * Close the connection and release the well-known name.
+   *
+   * Calling this more than once is a no-op.
+   */
+  dispose(): Promise<void>
+}
+
 export declare class MediaSession {
   constructor(name: string, identity: string, desktopEntry: string)
   setEventHandler(handler?: (((err: Error | null, arg: MediaSessionEvents) => Promise<undefined> | undefined)) | undefined | null): void
@@ -80,6 +119,49 @@ export interface DbusCallOptions {
   signature?: string
   /** One element per argument described by `signature`. Defaults to none. */
   body?: unknown[]
+}
+
+/** The app's `LyricsStore`, as published by `GetLyrics`. */
+export interface DbusLyricsDocument {
+  /** Plain or per-word primary lyrics. */
+  regular: Array<DbusLyricsLine>
+  /** Per-word lyrics, when available. */
+  perWord?: Array<DbusLyricsLine>
+  /** Translation lines, when available. */
+  translate?: Array<DbusLyricsLine>
+  /** Romanization lines, when available. */
+  roma?: Array<DbusLyricsLine>
+}
+
+/** A single lyric line. */
+export interface DbusLyricsLine {
+  /** Start time in milliseconds. */
+  startTime: number
+  /** End time in milliseconds. */
+  endTime: number
+  /** Timed words, relative to the line. */
+  words: Array<DbusLyricsWord>
+}
+
+/** Track metadata published as properties. */
+export interface DbusLyricsTrack {
+  /** Current play id. */
+  id: string
+  title: string
+  artist: string
+  album: string
+  /** Track duration in milliseconds. */
+  duration?: number
+}
+
+/** A single timed word (or, for plain LRC, the whole line). */
+export interface DbusLyricsWord {
+  /** Text of this word. */
+  text: string
+  /** Start time in milliseconds, relative to the line. */
+  startTime: number
+  /** Duration in milliseconds. */
+  duration: number
 }
 
 /** The reply to a method call. */
@@ -181,8 +263,20 @@ export interface MprisMetadata {
 
 export interface PlaybackState {
   status: PlaybackStatus
+  /** Position in microseconds at the moment this update was produced. */
   position: number
   speed?: number
+  /**
+   * Whether the position is currently advancing. Defaults to
+   * `status == Playing`; `false` freezes the reported position during
+   * buffering stalls without changing the MPRIS playback status.
+   */
+  advancing?: boolean
+  /**
+   * True when `position` comes from a seek and is authoritative even if the
+   * previous clock was paused. Defaults to `false`.
+   */
+  seeked?: boolean
 }
 
 export declare const enum PlaybackStatus {

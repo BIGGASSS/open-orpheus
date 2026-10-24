@@ -81,6 +81,10 @@ export default class SmtcAdapter
     this.pushTimeline();
   }
 
+  onAdvancing(): void {
+    // SMTC extrapolates from the timeline; no separate clock state.
+  }
+
   onPosition(position: number): void {
     this.position = position;
     this.pushTimeline();

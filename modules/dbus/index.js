@@ -780,5 +780,6 @@ module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __n
 module.exports = nativeBinding
 module.exports.DbusClient = nativeBinding.DbusClient
 module.exports.DbusSubscription = nativeBinding.DbusSubscription
+module.exports.LyricsService = nativeBinding.LyricsService
 module.exports.MediaSession = nativeBinding.MediaSession
 module.exports.PlaybackStatus = nativeBinding.PlaybackStatus

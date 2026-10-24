@@ -66,6 +66,10 @@ export default class NowPlayingAdapter
     this.pushMetadata();
   }
 
+  onAdvancing(): void {
+    // The system extrapolates from `elapsed` and `rate`.
+  }
+
   onPosition(position: number): void {
     this.position = position;
     this.pushMetadata();

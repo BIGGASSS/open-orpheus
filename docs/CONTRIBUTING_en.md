@@ -62,7 +62,7 @@ open-orpheus/
 │   ├── window/             # Cross-platform window utilities (deep Linux integration: Wayland/X11 protocol interception, input regions, cursor capture)
 │   ├── audio-effect/       # Audio effect processing (WebAssembly, used by AudioWorklet)
 │   ├── av3a/               # AV3A (Audio Vivid) decoder
-│   ├── dbus/               # Linux D-Bus integration (generic client, MPRIS media session)
+│   ├── dbus/               # Linux D-Bus integration (generic client, MPRIS media session, lyrics service)
 │   ├── nowplaying/         # macOS media session (MPNowPlayingInfoCenter)
 │   ├── sys-win32/          # Windows media session (SMTC) and scheduled power-off
 │   └── lifecycle/          # Exit callbacks and lifecycle utilities
@@ -114,7 +114,7 @@ flowchart TB
   3. **Renderer Side** (`gui/src/lib/bridge.ts` → `getBridge<T>(name)`) — uses a Proxy to map property access to channel paths: `api.cache.getStats()` → `_call("cache.getStats")`, `api.events.lyricsUpdate(cb)` → `_on("lyricsUpdate", cb)`, providing full type inference and IDE autocompletion.
   4. **Main Side** (`register.ts` → `registerIpcHandlers(wc, prefix, handlers)`) — walks the handler object tree, automatically registering `ipc.handle()` for each leaf function; the `events` subtree is excluded (push-from-main only).
 - **GUI** (`gui/`) is a Svelte SPA responsible for settings, desktop lyrics, context menus, mini player, and all auxiliary UI, loaded via the `gui://` protocol. Menus are rendered as transparent frameless BrowserWindows (using a fullscreen overlay approach on Wayland due to protocol limitations).
-- **Native Modules** (`modules/`) provide low-level capabilities to the Electron main process via napi-rs: SQLite database (with Chinese pinyin collation), cross-platform window utilities (deep Linux integration for Wayland/X11 protocol interception, input region control, window dragging, cursor capture), system font enumeration, AV3A audio decoding, and per-platform system integrations (`dbus/` generic D-Bus client + MPRIS, `nowplaying/`, `sys-win32/` Windows media session and scheduled power-off); `audio-effect/` is compiled to WebAssembly and consumed by the AudioWorklet in `src/worklets/`.
+- **Native Modules** (`modules/`) provide low-level capabilities to the Electron main process via napi-rs: SQLite database (with Chinese pinyin collation), cross-platform window utilities (deep Linux integration for Wayland/X11 protocol interception, input region control, window dragging, cursor capture), system font enumeration, AV3A audio decoding, and per-platform system integrations (`dbus/` generic D-Bus client + MPRIS + lyrics service, `nowplaying/`, `sys-win32/` Windows media session and scheduled power-off); `audio-effect/` is compiled to WebAssembly and consumed by the AudioWorklet in `src/worklets/`.
 
 ### Key Concepts
 
