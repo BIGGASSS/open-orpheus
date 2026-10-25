@@ -80,7 +80,6 @@ const LOG_ENV_VARS = [
   "OPEN_ORPHEUS_LOG_LEVEL_CONSOLE",
   "OPEN_ORPHEUS_LOG_LEVEL_FILE",
   "OPEN_ORPHEUS_LOG_FORMAT",
-  "OPEN_ORPHEUS_LOG_SYNC",
 ] as const;
 
 function clearLoggerEnv(): void {
@@ -111,10 +110,6 @@ async function importLogger(): Promise<{
   };
 }
 
-function findTarget(targets: TransportTarget[], name: string): TransportTarget | undefined {
-  return targets.find((target) => target.target === name);
-}
-
 beforeEach(() => {
   logDir = mkdtempSync(join(tmpdir(), "open-orpheus-logger-"));
   setStdoutIsTty(undefined);
@@ -139,7 +134,6 @@ describe("log transport", () => {
       options: {
         destination: join(logDir, "latest.ndjson"),
         mkdir: true,
-        sync: false,
       },
     });
     expect(targets[1]).toEqual({
@@ -315,44 +309,6 @@ describe("log levels", () => {
         variable: "OPEN_ORPHEUS_LOG_LEVEL_CONSOLE",
         value: "loud",
         fallback: "debug",
-      },
-      "Invalid logger configuration value"
-    );
-  });
-});
-
-describe("log file options", () => {
-  it("enables synchronous writes with OPEN_ORPHEUS_LOG_SYNC=1", async () => {
-    process.env.OPEN_ORPHEUS_LOG_SYNC = "1";
-
-    const { targets } = await importLogger();
-
-    expect(findTarget(targets, "pino/file")).toMatchObject({
-      options: { sync: true },
-    });
-  });
-
-  it("accepts yes/on as truthy and no/off as falsy", async () => {
-    process.env.OPEN_ORPHEUS_LOG_SYNC = "on";
-    let { targets } = await importLogger();
-    expect(findTarget(targets, "pino/file")).toMatchObject({ options: { sync: true } });
-
-    process.env.OPEN_ORPHEUS_LOG_SYNC = "off";
-    ({ targets } = await importLogger());
-    expect(findTarget(targets, "pino/file")).toMatchObject({ options: { sync: false } });
-  });
-
-  it("ignores invalid boolean values and warns", async () => {
-    process.env.OPEN_ORPHEUS_LOG_SYNC = "sometimes";
-
-    const { targets } = await importLogger();
-
-    expect(findTarget(targets, "pino/file")).toMatchObject({ options: { sync: false } });
-    expect(hoisted.log).toHaveBeenCalledWith(
-      {
-        variable: "OPEN_ORPHEUS_LOG_SYNC",
-        value: "sometimes",
-        fallback: "false",
       },
       "Invalid logger configuration value"
     );

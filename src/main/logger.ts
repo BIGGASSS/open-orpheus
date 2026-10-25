@@ -73,27 +73,6 @@ function readFormat(): LogFormat {
   return "auto";
 }
 
-function readBoolean(name: string, fallback: boolean): boolean {
-  const raw = envValue(name);
-  if (raw === undefined) return fallback;
-
-  switch (raw.toLowerCase()) {
-    case "1":
-    case "true":
-    case "yes":
-    case "on":
-      return true;
-    case "0":
-    case "false":
-    case "no":
-    case "off":
-      return false;
-    default:
-      configWarnings.push({ variable: name, value: raw, fallback: String(fallback) });
-      return fallback;
-  }
-}
-
 /** Return the level that enables the most records. */
 function mostVerbose(levels: LogLevel[]): LogLevel {
   return levels.reduce((most, level) =>
@@ -109,7 +88,6 @@ const fileLevel = readLevel("OPEN_ORPHEUS_LOG_LEVEL_FILE", globalLevel);
 const consoleEnabled = consoleLevel !== "silent";
 const fileEnabled = fileLevel !== "silent";
 const consoleFormat = consoleEnabled ? readFormat() : "auto";
-const syncLogs = fileEnabled ? readBoolean("OPEN_ORPHEUS_LOG_SYNC", false) : false;
 
 const activeLevels = [
   ...(consoleEnabled ? [consoleLevel] : []),
@@ -342,7 +320,6 @@ if (fileEnabled) {
     options: {
       destination: latestLog,
       mkdir: true,
-      sync: syncLogs,
     },
   });
 }

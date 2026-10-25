@@ -26,7 +26,6 @@ Set these before launching the application.
 | `OPEN_ORPHEUS_LOG_LEVEL_CONSOLE` | same as above                                                | inherits | Console sink level; `silent` disables the console sink   |
 | `OPEN_ORPHEUS_LOG_LEVEL_FILE`    | same as above                                                | inherits | File sink level; `silent` disables the file sink         |
 | `OPEN_ORPHEUS_LOG_FORMAT`        | `auto`, `json`, `pretty`                                     | `auto`   | Console format. `auto` = pretty on a TTY, JSON otherwise |
-| `OPEN_ORPHEUS_LOG_SYNC`          | `1/true/yes/on`, `0/false/no/off`                            | `false`  | Synchronous file writes, for diagnosing crashes (slower) |
 
 Values are case-insensitive and trimmed. Invalid values fall back to the
 default and emit a warning instead of failing startup.
@@ -119,8 +118,7 @@ from a terminal is the simplest way to test them.
 
 - `trace` is very verbose. Retention runs at startup, so a long trace session
   produces a large `latest.ndjson` until the next launch.
-- `OPEN_ORPHEUS_LOG_SYNC=1` makes file writes synchronous. Use it only while
-  diagnosing a crash; it can slow the main process.
+- File writes are asynchronous; pending records are flushed on shutdown.
 - The number of retained rotated logs is intentionally fixed at 5.
 - Preload logs are forwarded to the main process. The main logger's level
   decides what is written, but the IPC message is still sent.
