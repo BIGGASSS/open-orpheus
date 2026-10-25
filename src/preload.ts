@@ -10,9 +10,12 @@ import "./preload/channel";
 import "./preload/calls/index";
 
 async function getSCFonts(): Promise<string[]> {
-  return await ipcRenderer.invoke("fonts.getSCFonts");
+  const fonts = (await ipcRenderer.invoke("fonts.getSCFonts")) as string[];
+  LOGGER.debug({ count: fonts.length }, "Fetched system fonts for font patch");
+  return fonts;
 }
 
+LOGGER.debug({ isMain }, "Installing main-world patches");
 contextBridge.executeInMainWorld({
   func: (isMain: boolean, getFonts: typeof getSCFonts) => {
     const originalContentDocumentDescriptor = Object.getOwnPropertyDescriptor(

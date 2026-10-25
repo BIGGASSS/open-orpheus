@@ -226,8 +226,9 @@ export default class AudioEffectManager {
         output: this._workletNode,
         active: false,
       });
+      LOGGER.debug({ sampleRate: this.ctx.sampleRate }, "Audio-effect worklet loaded");
     } catch (err) {
-      LOGGER.error({ err: toError(err) }, "Failed to load audio-effect worklet");
+      LOGGER.warn({ err: toError(err) }, "Failed to load audio-effect worklet");
       // Non-fatal: audio still works without advanced effects.
     }
   }
@@ -415,6 +416,10 @@ export default class AudioEffectManager {
       this.convolverNode.normalize = false;
       this.convolverNode.buffer = audioBuffer;
       this.setSlotActive("convolver", true);
+      LOGGER.debug(
+        { durationSeconds: audioBuffer.duration, sampleRate: audioBuffer.sampleRate },
+        "Convolution IR loaded"
+      );
     } catch (err) {
       if (serial !== this.convolverLoadSerial) return;
       LOGGER.error({ err: toError(err) }, "Failed to decode convolution IR");
@@ -485,6 +490,14 @@ export default class AudioEffectManager {
     }
 
     prev.connect(this.output);
+
+    LOGGER.debug(
+      {
+        enabled: this.enabled,
+        activeSlots: this.slots.filter((slot) => slot.active).map((slot) => slot.name),
+      },
+      "Audio effect chain rebuilt"
+    );
   }
 
   // #endregion
