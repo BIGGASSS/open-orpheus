@@ -18,6 +18,7 @@ import {
 } from "./util";
 import { data as dataDir, storage as storageDir, wasm } from "./folders";
 import { client } from "./request";
+import { toError } from "../util";
 
 /**
  * Names each cache write's temporary file apart from every other one.
@@ -122,6 +123,8 @@ export async function loadFromOrpheusUrl(url: string): Promise<SimpleResponse> {
     throw new NetworkError(`Invalid URL protocol: ${parsedUrl.protocol}`);
   }
 
+  LOGGER.debug({ host: parsedUrl.hostname, path: parsedUrl.pathname }, "Routing orpheus request");
+
   switch (parsedUrl.hostname) {
     case "orpheus":
       // #region orpheus://orpheus/storage/local
@@ -177,6 +180,10 @@ export async function loadFromOrpheusUrl(url: string): Promise<SimpleResponse> {
             buf = (await readFile(cachedPath)) as Buffer<ArrayBuffer>;
             const actualMd5 = getMd5(buf);
             if (md5 !== actualMd5) {
+              LOGGER.warn(
+                { expected: md5, actual: actualMd5 },
+                "Cached wasm MD5 mismatch, refetching"
+              );
               await doFetch();
               shouldWriteCache = true;
             }
@@ -304,6 +311,10 @@ export async function loadFromOrpheusUrl(url: string): Promise<SimpleResponse> {
               })
             );
           }
+          LOGGER.debug(
+            { id, name, mode: isImage ? "image" : "archive" },
+            "Fetched custom skin asset"
+          );
         }
 
         // 3. Read the requested file from skinPath
@@ -390,6 +401,7 @@ export async function loadFromOrpheusUrl(url: string): Promise<SimpleResponse> {
           }
         } catch {
           // Fail silently, let's try refetching the files.
+          LOGGER.debug({ id, md5 }, "Orpheus cacheresource cache miss");
         }
 
         // Create the most nested dir recursively is enough
@@ -556,6 +568,7 @@ export async function loadFromOrpheusUrl(url: string): Promise<SimpleResponse> {
         }
         try {
           // No embedded lyrics: try the .lrc file sitting next to the music file
+          LOGGER.debug({ path }, "Falling back to sidecar lyric file");
           const lrcPath = join(dirname(path), basename(path, extname(path)) + ".lrc");
           const lrcContent = await readFile(lrcPath, "utf8");
           return {
@@ -600,11 +613,15 @@ export default function registerOrpheusScheme(protocol: Protocol) {
       });
     } catch (error) {
       if (error instanceof LoadError) {
+        LOGGER.warn({ status: error.status }, "Orpheus request rejected");
         return new Response(error.message, { status: error.status });
       } else if (error instanceof NetworkError) {
+        LOGGER.warn({ err: toError(error) }, "Orpheus request rejected with network error");
         return Response.error();
       }
+      LOGGER.error({ err: toError(error) }, "Orpheus protocol handler failed");
       return new Response("Internal Server Error", { status: 500 });
     }
   });
+  LOGGER.info({ scheme: "orpheus" }, "Orpheus scheme handler registered");
 }
