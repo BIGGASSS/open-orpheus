@@ -27,4 +27,6 @@ export function exposeApi(prefix: string, syncValues: Record<string, unknown> = 
       });
     },
   });
+
+  LOGGER.debug({ api: prefix, syncKeys: Object.keys(syncValues) }, "Window API exposed");
 }

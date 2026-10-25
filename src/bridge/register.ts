@@ -50,6 +50,7 @@ export function registerIpcHandlers<T>(
       if (typeof value === "function") {
         const channel = currentPath.join(".");
         if (seen.has(channel)) {
+          LOGGER.error({ channel }, "Duplicate IPC channel detected");
           throw new Error(`Duplicate IPC channel: "${channel}"`);
         }
         seen.add(channel);
@@ -61,4 +62,6 @@ export function registerIpcHandlers<T>(
   }
 
   walk(handlers as Record<string, unknown>, [prefix]);
+
+  LOGGER.debug({ prefix, count: seen.size }, "IPC handlers registered");
 }

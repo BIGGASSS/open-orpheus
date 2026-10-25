@@ -23,11 +23,14 @@ export function registerLyricsHandlers(wnd: Electron.BrowserWindow) {
     wnd.webContents.send("lyrics.playStateUpdate", e.data);
   });
   const unlistenTimeUpdate = lyricsDispatcher.on("timeupdate", (e) => {
+    LOGGER.trace({ time: e.data }, "Forwarded lyrics time update");
     wnd.webContents.send("lyrics.timeUpdate", e.data);
   });
   const unlistenPlaybackRateUpdate = lyricsDispatcher.on("playbackratechange", (e) => {
     wnd.webContents.send("lyrics.playbackRateUpdate", e.data);
   });
+
+  LOGGER.debug({ listeners: 5, prefix: "lyrics" }, "Lyrics bridge listeners installed");
 
   wnd.on("closed", () => {
     unlistenLyricsUpdate();
