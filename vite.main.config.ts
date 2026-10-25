@@ -45,5 +45,5 @@ export default defineConfig({
   },
   // unzipper has a dependency on @aws-sdk/client-s3, which is not needed in
   // our context and causes build issues. This plugin mocks it out.
-  plugins: [NoS3Plugin(), ForceESPlugin(), PinoWorkerPlugin(), LoggerPlugin()],
+  plugins: [NoS3Plugin(), ForceESPlugin(), LoggerPlugin(), PinoWorkerPlugin()],
 });
