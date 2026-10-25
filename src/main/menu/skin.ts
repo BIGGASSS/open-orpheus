@@ -52,5 +52,18 @@ export function registerMenuSkinUpdater() {
         fgDisabledAlphaMatch?.[1]
       );
     }
+    if (!fgMatch || !fgDisabledMatch) {
+      LOGGER.warn(
+        {
+          hasForeground: Boolean(fgMatch),
+          hasDisabledForeground: Boolean(fgDisabledMatch),
+        },
+        "Menu skin element is missing text colors; keeping defaults"
+      );
+    }
+    LOGGER.info(
+      { background: menuSkin.background, foreground: menuSkin.foreground },
+      "Menu skin applied"
+    );
   });
 }

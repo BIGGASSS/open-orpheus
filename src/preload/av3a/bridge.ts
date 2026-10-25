@@ -15,6 +15,7 @@ import type { Av3aContract } from "../../bridge/contracts/av3a-api";
  */
 export const av3aBridge = {
   start(playInfo: AudioPlayInfo): Promise<void> {
+    LOGGER.debug({ songId: playInfo.songId }, "AV3A decode start requested");
     return ipcRenderer.invoke("av3a.start", playInfo) as Promise<void>;
   },
   stop(): Promise<void> {

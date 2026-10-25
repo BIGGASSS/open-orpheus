@@ -9,7 +9,9 @@ import "./nimsys";
 
 if (isMain) {
   // Only main window uses player
-  void import("./audioplayer");
-  void import("./audioeffect");
-  void import("./player");
+  void Promise.all([import("./audioplayer"), import("./audioeffect"), import("./player")]).then(
+    () => {
+      LOGGER.debug("Audio call handlers loaded");
+    }
+  );
 }

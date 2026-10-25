@@ -83,6 +83,10 @@ export class Av3aEngine {
     const isUrlAv3a = playInfo.type === 4 && playInfo.audioFormat === "av3a";
     const isLocal = playInfo.type === 0;
     if (!isUrlAv3a && !isLocal) {
+      LOGGER.warn(
+        { playId: playInfo.playId, type: playInfo.type },
+        "Unsupported play info for AV3A playback"
+      );
       this.sendEvent("error", "Unsupported play info for AV3A playback");
       return;
     }
@@ -98,6 +102,7 @@ export class Av3aEngine {
       const localPath = normalizePath(playInfo.path);
       if (!(await isAv3aFile(localPath))) {
         if (!isStale()) {
+          LOGGER.warn({ path: localPath }, "Selected file does not contain an AV3A track");
           this.sendEvent("error", "Selected file does not contain an AV3A track");
         }
         return;
@@ -182,9 +187,23 @@ export class Av3aEngine {
       await process.stop().catch(() => {});
       await destroyStreamer();
       if (!isStale()) {
+        LOGGER.error(
+          { err: toError(error), playId: playInfo.playId },
+          "Failed to start AV3A playback"
+        );
         this.sendEvent("error", toError(error).message);
       }
       return;
+    }
+    if (!isStale()) {
+      LOGGER.info(
+        {
+          playId: playInfo.playId,
+          songId: playInfo.songId,
+          source: isLocal ? "local" : "stream",
+        },
+        "AV3A playback started"
+      );
     }
     if (isStale()) {
       // Superseded while starting; tear down quietly (the newer request owns it).

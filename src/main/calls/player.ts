@@ -62,6 +62,7 @@ export type PlayInfo =
     };
 
 registerCallHandler<[PlayInfo], void>("player.setInfo", (_event, playInfo) => {
+  LOGGER.debug({ playId: playInfo.playId, songType: playInfo.songType }, "Player metadata updated");
   mediaSession.setMetadata(
     playInfo.playId
       ? {
@@ -105,6 +106,10 @@ type ListElement = {
 registerCallHandler<[string], [boolean]>("player.addListElement", (_event, json) => {
   const listElements = JSON.parse(json) as ListElement[];
   listItems = listItems.concat(listElements);
+  LOGGER.debug(
+    { added: listElements.length, total: listItems.length },
+    "Player list elements added"
+  );
   updateListData(listItems, currentPlay);
   return [true];
 });
@@ -207,6 +212,14 @@ registerCallHandler<
     lyrics.roma = parseLrc(romalrc);
   }
   lyricsDispatcher.lyrics = lyrics;
+  LOGGER.debug(
+    {
+      wordByWord: Boolean(lyrics["per-word"]),
+      translated: Boolean(lyrics.translate),
+      roma: Boolean(lyrics.roma),
+    },
+    "Player lyrics updated"
+  );
   return [true];
 });
 
@@ -313,6 +326,7 @@ registerCallHandler<[string, string], [boolean]>(
     const [buf, [width, height]] = await createDesktopLyricsPreview(lyricsStyle, text);
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, buf);
+    LOGGER.debug({ path }, "Desktop lyrics preview rendered");
     event.sender.send("channel.call", "player.onRenderLRCImageResult", path, true, width, height);
     return [true];
   }

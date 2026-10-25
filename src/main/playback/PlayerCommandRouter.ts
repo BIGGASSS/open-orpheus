@@ -111,6 +111,7 @@ export default class PlayerCommandRouter {
   }
 
   private toggleTowards(target: PlaybackStatus): void {
+    LOGGER.debug({ target }, "Queued playback toggle");
     this.inflight.push(target);
     this.armExpiry();
     this.sendHotkey("play_pause_3");
@@ -142,6 +143,7 @@ export default class PlayerCommandRouter {
     // a no-op — don't wedge every later request on a stale backlog.
     this.expiryTimer = setTimeout(() => {
       this.expiryTimer = null;
+      LOGGER.warn({ pending: this.inflight.length }, "Dropped unconfirmed playback toggles");
       this.inflight.length = 0;
     }, INTENT_TTL_MS);
   }

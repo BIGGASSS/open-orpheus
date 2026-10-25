@@ -151,6 +151,7 @@ registerCallHandler<[string, string, string], [string, string]>(
       LOGGER.error({ err: toError(err) }, "Cannot monitor download dir");
     }
 
+    LOGGER.info({ downloadDir, cacheDir }, "Storage initialized");
     return [downloadDir, cacheDir];
   }
 );
@@ -285,6 +286,7 @@ registerCallHandler<[string, boolean, string, number, string[]], void>(
       path = normalizePath(path);
       const excludeSet = new Set(excludes.map((p) => normalizePath(path, p)));
       const batch: DownloadScannerItem[] = [];
+      let scanned = 0;
 
       const entries = await readdir(path, {
         recursive: true,
@@ -313,10 +315,12 @@ registerCallHandler<[string, boolean, string, number, string[]], void>(
           if (!info) continue;
 
           batch.push(info);
+          scanned++;
           if (batch.length >= limit) flush();
         }
 
         flush();
+        LOGGER.info({ path, scanned }, "Download scan finished");
       } catch (err) {
         LOGGER.error({ path, err }, "Error when scanning downloads");
       }
@@ -515,6 +519,7 @@ registerCallHandler<[string, string, string | "", string | "", AddId3Request], v
       if (imageFullPath) await rm(imageFullPath, { force: true });
       await rm(mediaPath, { force: true });
 
+      LOGGER.debug({ taskId, path: relPath }, "ID3 tag written");
       event.sender.send("channel.call", "storage.onaddid3done", taskId, 1, relPath);
     })().catch((err) => {
       LOGGER.error({ err: toError(err) }, "Failed to write ID3 tag");
@@ -567,6 +572,7 @@ async function handleFileBatch(
         });
       })
     );
+    LOGGER.info({ type, count: srcPaths.length }, "Batch file operation finished");
   } catch (error) {
     LOGGER.error({ type, err: error }, "Error when doing batch file ops");
     event.sender.send("channel.call", `storage.on${type}process`, {
@@ -586,7 +592,7 @@ registerCallHandler<["copy", "abs", "", string[], "abs", "", string[]], void>(
   "storage.copyfiles",
   async (event, type, srcType, emptyStr1, srcPaths, destType, emptyStr2, destPaths) => {
     if (type !== "copy" || srcType !== "abs" || destType !== "abs") {
-      LOGGER.error({ type, srcType, destType }, "Unsupported file operation type");
+      LOGGER.warn({ type, srcType, destType }, "Unsupported file operation type");
       return;
     }
 
@@ -598,7 +604,7 @@ registerCallHandler<["move", "abs", "", string[], "abs", "", string[]], void>(
   "storage.movefiles",
   async (event, type, srcType, emptyStr1, srcPaths, destType, emptyStr2, destPaths) => {
     if (type !== "move" || srcType !== "abs" || destType !== "abs") {
-      LOGGER.error({ type, srcType, destType }, "Unsupported file operation type");
+      LOGGER.warn({ type, srcType, destType }, "Unsupported file operation type");
       return;
     }
 

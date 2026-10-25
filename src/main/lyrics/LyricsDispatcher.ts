@@ -24,6 +24,7 @@ export default class LyricsDispatcher extends Emittery<LyricsDispatcherEvents> {
 
   set lyrics(value) {
     this._lyrics = value;
+    LOGGER.debug({ lines: value?.regular.length ?? 0 }, "Lyrics updated");
     if (value) this.slogan = null;
     void this.emit("lyricsupdate", value);
   }

@@ -32,6 +32,8 @@ registerShutdownTask({
 });
 
 export function initialize() {
+  LOGGER.debug({ entries: Object.keys(KV_ENTRIES).length }, "Initializing the settings store");
+
   kv = new Keyv({
     namespace: "settings",
     store: new KeyvSqlite({
@@ -60,6 +62,7 @@ export function initialize() {
 
   events = new Emittery();
   kv.onHook(KeyvHooks.BEFORE_SET, ({ key, value }) => {
+    LOGGER.debug({ key }, "Setting updated");
     void events.emit("change", { key, value });
   });
   kv.onHook(KeyvHooks.AFTER_DELETE, ({ key }) => {

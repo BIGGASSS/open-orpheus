@@ -18,8 +18,13 @@ contextBridge.exposeInMainWorld("downloadReason", downloadReason);
 contextBridge.exposeInMainWorld(
   "downloadPackage",
   function (callback: (progress: DownloadPackageProgress) => void) {
+    if (!(downloadReason in PackageDownloadReason)) {
+      LOGGER.warn({ reason: downloadReason }, "Unexpected package download reason");
+    }
+    LOGGER.info({ reason: downloadReason }, "Package download started");
     const listener = (event: Electron.IpcRendererEvent, progress: DownloadPackageProgress) => {
       if (progress.step === "completed") {
+        LOGGER.info({ reason: downloadReason }, "Package download completed");
         ipcRenderer.off("download-package-progress", listener);
       }
       callback(progress);

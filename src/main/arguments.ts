@@ -19,6 +19,7 @@ export async function raceArgument<T>(
       })
     );
   } catch {
+    LOGGER.debug({ count: args.length }, "No command-line argument matched");
     return null;
   }
 }

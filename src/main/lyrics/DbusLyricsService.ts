@@ -159,6 +159,8 @@ export default class DbusLyricsService {
       playback.on("durationchanged", () => this.refreshTrack())
     );
 
+    LOGGER.debug("D-Bus lyrics service listeners installed");
+
     // Push whatever is already known. If the service was created after a song
     // started, this is the initial snapshot; the native side drops no-ops.
     this.refreshLyrics();

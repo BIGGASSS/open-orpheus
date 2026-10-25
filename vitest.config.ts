@@ -9,6 +9,7 @@ export default defineConfig({
     },
   },
   test: {
+    setupFiles: ["__test__/helpers/setup.ts"],
     exclude: [...configDefaults.exclude, "modules/*"],
     coverage: {
       include: ["src/**/*.ts", "packaging/**/*.ts"],

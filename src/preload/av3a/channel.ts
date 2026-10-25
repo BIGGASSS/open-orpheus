@@ -56,6 +56,7 @@ function onMessage(data: unknown): void {
 ipcRenderer.on("av3a.channel", (event) => {
   const next = (event.ports[0] as MessagePort | undefined) ?? null;
   if (port && port !== next) {
+    LOGGER.debug("AV3A decode channel replaced");
     port.onmessage = null;
     try {
       port.close();
@@ -65,6 +66,7 @@ ipcRenderer.on("av3a.channel", (event) => {
   }
   port = next;
   if (port) {
+    LOGGER.debug("AV3A decode channel connected");
     port.onmessage = (messageEvent: MessageEvent) => {
       onMessage(messageEvent.data);
     };

@@ -18,6 +18,7 @@ export default abstract class Pack {
 
   constructor(path: string) {
     this.path = path;
+    LOGGER.debug({ pack: this.constructor.name, path }, "Pack instance created");
   }
 
   protected normalizePath(path: string): string {

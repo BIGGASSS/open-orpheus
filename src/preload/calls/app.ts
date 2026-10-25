@@ -96,6 +96,8 @@ if (isMain) {
 
       source.connect(player.gainNode);
       source.start();
+
+      LOGGER.info({ path: voice.path, duration: audioBuffer.duration }, "System voice hint played");
     }
   );
 }
@@ -107,6 +109,7 @@ registerCallHandler<[string], void>("app.recognizeMusic", async (guid) => {
 
   const recognizer = new MusicRecognizer();
   recognizeTasks.set(guid, recognizer);
+  LOGGER.debug({ guid }, "Music recognition started");
 
   try {
     const result = await recognizer.start();
@@ -115,6 +118,10 @@ registerCallHandler<[string], void>("app.recognizeMusic", async (guid) => {
         ...result,
         guid,
       });
+      LOGGER.info(
+        { guid, code: result.code, duration: result.duration },
+        "Music recognition finished"
+      );
     }
   } finally {
     if (recognizeTasks.get(guid) === recognizer) {

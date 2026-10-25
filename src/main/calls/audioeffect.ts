@@ -7,6 +7,7 @@ registerCallHandler<
   [number, { path: string; pathtype: number }],
   [{ data: string } | { errorCode: number; errorMsg: string }]
 >("audioeffect.getParams", async (event, num, pathInfo) => {
+  LOGGER.debug({ pathtype: pathInfo.pathtype }, "Audio effect params requested");
   try {
     const effect = await readEffect(pathInfo);
     if (typeof effect === "string") {

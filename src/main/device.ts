@@ -46,6 +46,7 @@ export async function prepareDeviceId() {
     deviceId = savedDeviceId.deviceId;
     ADDeviceId = savedDeviceId.ADDeviceId;
     if (deviceId && ADDeviceId) {
+      LOGGER.debug({ path: deviceIdFilePath }, "Loaded the saved device identifier");
       return;
     }
   } catch (e) {
@@ -70,6 +71,7 @@ export async function prepareDeviceId() {
 
   try {
     await writeFile(deviceIdFilePath, JSON.stringify({ deviceId, ADDeviceId }, null, 2), "utf-8");
+    LOGGER.info({ path: deviceIdFilePath }, "Generated a new device identifier");
   } catch (e) {
     LOGGER.warn("Failed to write device ID to file: %s", e);
   }

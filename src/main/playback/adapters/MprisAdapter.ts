@@ -4,7 +4,7 @@ import { MediaSession, PlaybackStatus as DbusPlaybackStatus } from "@open-orpheu
 
 import type { MprisMetadata } from "@open-orpheus/dbus";
 import { client } from "../../request";
-import { imageSize } from "../../../util";
+import { imageSize, toError } from "../../../util";
 import { artworkFileExists, artworkFileUrl, cacheArtwork, remoteArtExt } from "../artwork";
 import { PlaybackStatus, TrackInfo } from "../types";
 import { MediaSessionAdapter, PlayerCommandEvents } from "./MediaSessionAdapter";
@@ -198,6 +198,7 @@ export default class MprisAdapter
     const ext = remoteArtExt(downloadUrl);
     // Reuse the cached file if the art for this song was already downloaded.
     if (await artworkFileExists(id, ext)) {
+      LOGGER.debug({ trackId: id }, "Album art cache hit");
       return artworkFileUrl(id, ext);
     }
     try {
@@ -205,7 +206,11 @@ export default class MprisAdapter
         responseType: "buffer",
       });
       return await cacheArtwork(id, response.body, ext);
-    } catch {
+    } catch (error) {
+      LOGGER.warn(
+        { err: toError(error), trackId: id },
+        "Failed to download album art, using the remote URL"
+      );
       // Download failed; keep the (resized) remote URL so artwork still works.
       return downloadUrl;
     }

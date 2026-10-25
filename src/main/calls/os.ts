@@ -125,6 +125,7 @@ registerCallHandler<
   ],
   void
 >("os.setPowerRequests", (event, { enable, preventSystemSleep, preventDisplaySleep }) => {
+  LOGGER.debug({ enable, preventSystemSleep, preventDisplaySleep }, "Power save requests updated");
   if (enable) {
     setPowerRequest("prevent-app-suspension", preventSystemSleep);
     setPowerRequest("prevent-display-sleep", preventDisplaySleep);
@@ -184,11 +185,13 @@ async function applyExitWindowSystem(seconds: number, shouldShutdown: boolean) {
   clearAutoExit();
   if (isNaN(seconds) || !isFinite(seconds) || seconds <= 0) {
     // Disable auto exit
+    LOGGER.debug("System auto exit disabled");
     await disableScheduledShutdown();
     return;
   }
   const ms = seconds * 1000;
   const targetTimestamp = Date.now() + ms;
+  LOGGER.info({ seconds, shouldShutdown }, "System auto exit scheduled");
   if (shouldShutdown) {
     const result = await setScheduledShutdown(new Date(targetTimestamp));
     if (result !== ScheduleShutdownStatus.Ok && result !== ScheduleShutdownStatus.AlreadySet) {
@@ -211,6 +214,7 @@ async function applyExitWindowSystem(seconds: number, shouldShutdown: boolean) {
     await disableScheduledShutdown();
   }
   const timeout = setTimeout(() => {
+    LOGGER.info({ shouldShutdown }, "Auto exit countdown elapsed, quitting");
     autoExitState = null;
     // Only a countdown that is meant to shut the machine down may keep the
     // system schedule. An app-only countdown must stay cancellable, so an
