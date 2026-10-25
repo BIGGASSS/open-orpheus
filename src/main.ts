@@ -309,7 +309,7 @@ app.on("ready", async () => {
     // Register for Open Orpheus session
     registerOrpheusScheme(openOrpheusSession.protocol);
 
-    LOGGER.info("Protocol schemes registered");
+    LOGGER.info({ schemes: ["orpheus", "audio"] }, "Protocol schemes registered");
 
     await import("./main/database").then(async (m) => {
       await m.initializeDatabases();

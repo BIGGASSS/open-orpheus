@@ -623,5 +623,4 @@ export default function registerOrpheusScheme(protocol: Protocol) {
       return new Response("Internal Server Error", { status: 500 });
     }
   });
-  LOGGER.info({ scheme: "orpheus" }, "Orpheus scheme handler registered");
 }
