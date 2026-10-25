@@ -27,10 +27,8 @@ export let download = "";
 
 export function setCachePath(path: string) {
   cache = path;
-  LOGGER.debug({ path }, "Cache path changed");
 }
 
 export function setDownloadPath(path: string) {
   download = path;
-  LOGGER.debug({ path }, "Download path changed");
 }
