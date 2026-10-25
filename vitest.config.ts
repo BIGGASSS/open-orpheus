@@ -9,7 +9,9 @@ export default defineConfig({
     },
   },
   test: {
-    setupFiles: ["__test__/helpers/setup.ts"],
+    // Keep unit tests from importing the real Electron package, which may
+    // download a binary as a module side effect.
+    setupFiles: ["__test__/helpers/setup.ts", "__test__/helpers/electron.ts"],
     exclude: [...configDefaults.exclude, "modules/*"],
     coverage: {
       include: ["src/**/*.ts", "packaging/**/*.ts"],

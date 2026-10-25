@@ -1,4 +1,4 @@
-import { IpcMainInvokeEvent } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
 
 import CallDispatcher, { CallbackHandlerFunction, HandlerFunction } from "../CallDispatcher";
 
