@@ -15,6 +15,7 @@ import {
 
 import { guiUrl, mainWindow, ManagedWindow, OnDemandWindow, switchWindowPolicy } from "../window";
 import { registerIpcHandlers } from "../../bridge/register";
+import { toError } from "../../util";
 import type {
   DesktopLyricsContract,
   DesktopLyricsPreviewContract,
@@ -95,7 +96,13 @@ const desktopLyricsWindowOptions = {
 } satisfies BrowserWindowConstructorOptions;
 
 function setupDesktopLyricsWindow(wnd: BrowserWindow): BrowserWindow {
-  void wnd.loadURL(guiUrl("/desktop-lyrics"));
+  LOGGER.debug(
+    { windowId: ManagedWindow.fromBrowserWindow(wnd)?.id },
+    "Loading desktop lyrics window"
+  );
+  void wnd.loadURL(guiUrl("/desktop-lyrics")).catch((error) => {
+    LOGGER.error({ err: toError(error) }, "Failed to load desktop lyrics window");
+  });
 
   wnd.on("blur", () => {
     if (wnd.isDestroyed()) return;
@@ -197,12 +204,15 @@ function registerLifecycleSwitch() {
   settingsEvents.on("change", (e) => {
     if (e.data.key !== "window.lifecycle" || !window) return;
     window = switchWindowPolicy(window, () => createWindowForLifecycle(e.data.value));
+    LOGGER.info({ lifecycle: e.data.value }, "Desktop lyrics window lifecycle changed");
   });
 }
 
 export let window: ManagedWindow;
 export default async function createDesktopLyricsWindow() {
-  window = createWindowForLifecycle(await settings.get("window.lifecycle"));
+  const lifecycle = await settings.get("window.lifecycle");
+  window = createWindowForLifecycle(lifecycle);
+  LOGGER.info({ lifecycle }, "Desktop lyrics window created");
   registerLifecycleSwitch();
 }
 

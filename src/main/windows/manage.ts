@@ -39,6 +39,7 @@ class ManageWindow extends ManagedWindow {
     super();
     this.on("unbind", () => {
       if (manageWndInstance === this) manageWndInstance = null;
+      LOGGER.debug({ windowId: this.id }, "Manage window closed");
     });
 
     const manageWnd = this.createBrowserWindow(manageWindowOptions);
@@ -166,12 +167,14 @@ class ManageWindow extends ManagedWindow {
       },
     });
     registerSettingsHandlers(manageWnd);
+    LOGGER.info({ windowId: this.id }, "Manage window created");
   }
 }
 
 export default function showManageWindow() {
   const existing = manageWndInstance?.window;
   if (existing) {
+    LOGGER.debug({ windowId: manageWndInstance?.id }, "Focused existing manage window");
     existing.focus();
     return;
   }
