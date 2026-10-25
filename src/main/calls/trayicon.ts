@@ -22,8 +22,10 @@ registerCallHandler<[], [boolean]>("trayicon.wasInstall", () => {
 
 registerCallHandler<[], void>("trayicon.install", () => {
   install();
+  LOGGER.info("Tray icon installed");
 });
 
 registerCallHandler<[], void>("trayicon.uninstall", () => {
   uninstall();
+  LOGGER.info("Tray icon uninstalled");
 });

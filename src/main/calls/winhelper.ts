@@ -91,6 +91,7 @@ registerCallHandler<[], void>("winhelper.initMainWindow", () => {
 });
 registerCallHandler<[], void>("winhelper.finishLoadMainWindow", (event) => {
   // Window cannot be not existing at this time
+  LOGGER.info("Main window finished loading");
   setLifecycleState(LifecycleState.MainWindowLoaded, BrowserWindow.fromWebContents(event.sender)!);
 });
 
@@ -275,6 +276,11 @@ registerCallHandler<[string, string[], boolean, { id: string }], void>(
     const success = registerGlobalShortcut(name, keys, () => {
       event.sender.send("channel.call", "winhelper.onHotkey", name, isGlobal);
     });
+    if (success) {
+      LOGGER.debug({ name }, "Global hotkey registered");
+    } else {
+      LOGGER.warn({ name }, "Failed to register global hotkey, already in use");
+    }
     event.sender.send(
       "channel.call",
       "winhelper.onRegisterHotkeyResult",
@@ -301,6 +307,7 @@ registerCallHandler<[string, string[], boolean, { id: string }], void>(
       return;
     }
     unregisterGlobalShortcut(name);
+    LOGGER.debug({ name }, "Global hotkey unregistered");
     event.sender.send(
       "channel.call",
       "winhelper.onUnregisterHotkeyResult",

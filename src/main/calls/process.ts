@@ -50,6 +50,7 @@ async function handleUpload(event: Electron.IpcMainInvokeEvent, payload: UploadP
   });
 
   const fullPath = normalizePath(payload.path);
+  LOGGER.info({ songId: payload.songId }, "Cloud upload started");
 
   try {
     const [stats, content] = await Promise.all([stat(fullPath), readFile(fullPath)]);
@@ -347,6 +348,7 @@ async function handleUpload(event: Electron.IpcMainInvokeEvent, payload: UploadP
         })
       );
     }
+    LOGGER.info({ songId: payload.songId }, "Cloud upload finished");
   } catch (e) {
     if (!isFileNotFound(e)) globalLogger.error({ name: "cloud-upload", err: e }, "Upload error");
     event.sender.send(
@@ -375,7 +377,11 @@ registerCallHandler<[number, string, string, string], void>(
     if (exe === "cloudmusic_util") {
       if (action === "upload.upload") {
         void handleUpload(event, JSON.parse(payload));
+      } else {
+        LOGGER.warn({ exe, action }, "Unsupported process action");
       }
+    } else {
+      LOGGER.warn({ exe, action }, "Unsupported process executable");
     }
   }
 );
