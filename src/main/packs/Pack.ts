@@ -1,4 +1,4 @@
-import { normalize, sep } from "node:path";
+import { posix } from "node:path";
 
 import unzipper from "unzipper";
 
@@ -22,10 +22,10 @@ export default abstract class Pack {
   }
 
   protected normalizePath(path: string): string {
-    if (!path.startsWith("\\") && !path.startsWith("/")) {
-      path = sep + path;
-    }
-    return normalize(path);
+    // ZIP entry names always use `/`, regardless of the host platform. Using
+    // the host `path` module here would key the archive by `\` on Windows and
+    // make every lookup miss.
+    return posix.normalize(path.startsWith("/") ? path : `/${path}`);
   }
 
   abstract readPack(verify?: boolean): Promise<void>;
