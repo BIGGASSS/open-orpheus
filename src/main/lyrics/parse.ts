@@ -65,6 +65,8 @@ export function parseLrc(lrc: string): Lyrics {
   // Sort by timestamp
   entries.sort((a, b) => a.time - b.time);
 
+  LOGGER.debug({ lines: entries.length }, "Parsed LRC lyrics");
+
   // Convert to LyricLine[], inferring end_time from the next line
   return entries.map((entry, i) => {
     const nextTime = i + 1 < entries.length ? entries[i + 1].time : entry.time + 5000;
@@ -141,6 +143,8 @@ export function parseYrc(yrc: string): Lyrics {
       });
     }
   }
+
+  LOGGER.debug({ lines: lines.length }, "Parsed YRC lyrics");
 
   return lines;
 }

@@ -89,6 +89,8 @@ export async function createMediaSession(): Promise<void> {
       LOGGER.warn("Media session is not available on this platform.");
   }
 
+  LOGGER.info({ platform: os.platform() }, "Media session initialized");
+
   // OS media-session commands → renderer.
   new PlayerCommandRouter(adapter, playbackController);
 
@@ -149,9 +151,13 @@ export const mediaSession = {
    */
   async setCover(rawUrl: string | null): Promise<void> {
     const id = currentId;
-    if (id === null) return; // no track known yet
+    if (id === null) {
+      LOGGER.debug("Ignored album art without a current track");
+      return; // no track known yet
+    }
     const resolved = await resolveCoverUrl(rawUrl, id);
     if (id !== currentId) return; // a different playId arrived while resolving
+    LOGGER.debug({ trackId: id, hasArt: resolved !== "" }, "Resolved album artwork");
     playbackController.applyCover(resolved);
   },
 };

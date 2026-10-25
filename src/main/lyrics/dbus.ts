@@ -25,7 +25,10 @@ let creating: Promise<DbusLyricsService | null> | null = null;
  * app (and MPRIS) must keep working without a session bus.
  */
 export async function createDbusLyricsService(): Promise<DbusLyricsService | null> {
-  if (os.platform() !== "linux") return null;
+  if (os.platform() !== "linux") {
+    LOGGER.debug({ platform: os.platform() }, "D-Bus lyrics service skipped on this platform");
+    return null;
+  }
   if (instance) return instance;
   if (creating) return creating;
 
@@ -56,6 +59,10 @@ async function create(): Promise<DbusLyricsService | null> {
       name: "dbus-lyrics-service",
       run: () => adapter.dispose(),
     });
+    LOGGER.info(
+      { busName: DBUS_LYRICS_BUS_NAME, objectPath: DBUS_LYRICS_OBJECT_PATH },
+      "D-Bus lyrics service started"
+    );
     return adapter;
   } catch (error) {
     LOGGER.warn({ err: toError(error) }, "D-Bus lyrics service is unavailable");

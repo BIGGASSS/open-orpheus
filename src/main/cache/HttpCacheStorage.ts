@@ -32,6 +32,7 @@ export default class HttpCacheStorage extends Keyv {
     await this.driver.query("VACUUM;");
     await this.driver.query("PRAGMA wal_checkpoint(TRUNCATE);");
     await this.set("httpCache::lastVacuum", Date.now());
+    LOGGER.info("HTTP cache vacuum completed");
   }
 
   async totalSize() {
@@ -50,7 +51,8 @@ FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size();`);
     try {
       const result = await this.driver.query(`SELECT COUNT(*) AS count FROM ${this.driver.table};`);
       return (result[0] as { count: number }).count;
-    } catch {
+    } catch (error) {
+      LOGGER.warn({ err: toError(error) }, "Failed to count HTTP cache entries");
       return -1;
     }
   }

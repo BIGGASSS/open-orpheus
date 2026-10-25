@@ -66,6 +66,7 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
     // duplicate around `player.setCover`) is not a track change.
     if (this._snapshot.track?.id === track?.id) return; // unchanged song
     this._snapshot.track = track;
+    LOGGER.info({ trackId: track?.id ?? null }, "Playback track changed");
     if (track === null) {
       // No track → always Stopped.
       this._snapshot.position = null;
@@ -93,6 +94,7 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
     }
     void this.emit("timeupdate", position); // telemetry: always, unthrottled
     if (seeked) {
+      LOGGER.debug({ position }, "Playback position seeked");
       this.cancelPositionThrottle();
       void this.emit("positionchanged", { position, seeked: true });
     } else {
@@ -136,6 +138,7 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
     }
     if (next !== this._snapshot.status) {
       this._snapshot.status = next;
+      LOGGER.info({ status: next }, "Playback status changed");
       void this.emit("statuschanged", next);
     }
   }
@@ -143,6 +146,7 @@ export default class PlaybackController extends Emittery<PlaybackControllerEvent
   applyRate(rate: number): void {
     if (this._snapshot.rate === rate) return;
     this._snapshot.rate = rate;
+    LOGGER.info({ rate }, "Playback rate changed");
     void this.emit("playbackratechange", rate); // telemetry
     void this.emit("ratechanged", rate); // derived
   }
