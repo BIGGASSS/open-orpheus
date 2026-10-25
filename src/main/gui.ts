@@ -22,7 +22,7 @@ export function setFont(fnt: string | null) {
 async function loadSkinFileFromPack(packName: "skin" | "skin2", pathname: string) {
   const skinPack = await packManager.getOrWaitPack<SkinPack>(packName);
   try {
-    const file = await skinPack.readFile(normalize(pathname));
+    const file = await skinPack.readFile(pathname);
     return new Response(Buffer.from(file), {
       headers: {
         "Content-Type": mime.getType(extname(pathname)) || "application/octet-stream",

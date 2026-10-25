@@ -1,6 +1,4 @@
 import { BrowserWindow, screen } from "electron";
-import { normalize } from "node:path";
-
 import Emittery from "emittery";
 import {
   cancelNextWindowFirstCursorEnter,
@@ -150,7 +148,7 @@ export default class AppMenu extends Emittery<AppMenuEvents> {
       Promise.all(
         [...styles].map(async (style) => {
           try {
-            const buf = await skinPack.readFile(normalize(`/${style}`));
+            const buf = await skinPack.readFile(`/${style.replaceAll("\\", "/")}`);
             return [style, buf.toString("utf-8")] as const;
           } catch {
             return null;
