@@ -156,7 +156,6 @@ async function flushToBundle(): Promise<void> {
   seqNum++;
   const meta = await buildMeta();
   const bundle = await buildBundle(snapshot, meta);
-  LOGGER.debug({ filename, entries: snapshot.length, bytes: bundle.length }, "Dawn bundle built");
 
   pendingBundles.push({ filename, data: bundle });
 
@@ -218,7 +217,7 @@ async function uploadBundles(): Promise<void> {
         });
 
         if (r.statusCode !== 200) {
-          LOGGER.warn({ filename, statusCode: r.statusCode }, `Upload failed`);
+          LOGGER.error({ filename, statusCode: r.statusCode }, `Upload failed`);
           continue;
         }
 
@@ -233,9 +232,8 @@ async function uploadBundles(): Promise<void> {
         if (res.code === 200 && res.data?.successfiles?.includes?.(filename)) {
           pendingBundles.splice(i, 1);
           i--; // compensate for removed element
-          LOGGER.info({ filename, remaining: pendingBundles.length }, "Dawn bundle uploaded");
         } else {
-          LOGGER.warn({ filename, response: res }, `Upload rejected`);
+          LOGGER.error({ filename, response: res }, `Upload rejected`);
         }
       } catch (e) {
         LOGGER.error({ filename, err: toError(e) }, `Upload error`);
@@ -297,10 +295,6 @@ export function statisV2(type: string, entries: DawnEntry[]): void {
   // Hard cap: if the buffer grows beyond MAX_LOG_BUFFER before a flush
   // can fire (e.g. upload endpoint is down), drop the oldest entries.
   if (logBuffer.length > MAX_LOG_BUFFER) {
-    LOGGER.warn(
-      { dropped: logBuffer.length - MAX_LOG_BUFFER, cap: MAX_LOG_BUFFER },
-      "Dropped oldest dawn log entries"
-    );
     logBuffer.splice(0, logBuffer.length - MAX_LOG_BUFFER);
   }
 
@@ -329,7 +323,6 @@ export function statisV2(type: string, entries: DawnEntry[]): void {
 export function setStatisEndpoint(url: string, referer?: string): void {
   uploadUrl = url;
   refererUrl = referer ?? null;
-  LOGGER.info({ hasReferer: Boolean(referer) }, "Dawn upload endpoint configured");
   scheduleFlush();
 }
 
