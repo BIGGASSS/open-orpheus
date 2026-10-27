@@ -269,7 +269,8 @@ registerCallHandler<[string, { id: string; path: string }[], string], void>(
         const filePath = normalizePath(basePath, file.path);
         return {
           id: file.id,
-          exists: await fileExists(filePath),
+          // The renderer reads `exist` when restoring saved download records.
+          exist: await fileExists(filePath),
         };
       })
     );
