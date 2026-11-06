@@ -6,6 +6,7 @@ import type { UnsubscribeFunction } from "emittery";
 import { ManagedWindow } from "../window";
 import { sendIfAlive } from "../util/send";
 import { isAppUrl } from "../util/url";
+import { dipToScreenPoint, screenToDipPoint } from "../util/screenPoint";
 import { playbackController, playId } from "../mediaSession";
 
 export default class DesktopPetWindow extends ManagedWindow {
@@ -70,19 +71,19 @@ export default class DesktopPetWindow extends ManagedWindow {
     if (!hasDip && !hasPhysical) {
       // Nothing provided → use cursor (DIP) and convert to physical pixels
       const cursor = screen.getCursorScreenPoint();
-      const physical = screen.dipToScreenPoint(cursor);
+      const physical = dipToScreenPoint(cursor);
       x = cursor.x;
       y = cursor.y;
       px = physical.x;
       py = physical.y;
     } else if (hasDip && !hasPhysical) {
       // DIP provided → derive physical pixels
-      const physical = screen.dipToScreenPoint({ x: x!, y: y! });
+      const physical = dipToScreenPoint({ x: x!, y: y! });
       px = physical.x;
       py = physical.y;
     } else if (!hasDip && hasPhysical) {
       // Physical pixels provided → derive DIP
-      const dip = screen.screenToDipPoint({ x: px!, y: py! });
+      const dip = screenToDipPoint({ x: px!, y: py! });
       x = dip.x;
       y = dip.y;
     }
