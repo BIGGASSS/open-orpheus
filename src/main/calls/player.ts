@@ -1,14 +1,15 @@
 import { dirname } from "node:path";
 
-import { LineMode, ShowTranslate, TextAlignType } from "$sharedTypes/desktop-lyrics";
-import { LyricsStore } from "$sharedTypes/lyrics";
-import { MiniPlayerLikeMark, MiniPlayerTogetherStatus } from "$sharedTypes/mini-player";
+import { LineMode, ShowTranslate, TextAlignType } from "@shared/types/desktop-lyrics";
+import { LyricsStore } from "@shared/types/lyrics";
+import { MiniPlayerLikeMark, MiniPlayerTogetherStatus } from "@shared/types/mini-player";
 import { mkdir, writeFile } from "node:fs/promises";
 import { registerCallHandler } from "../calls";
 import { storage as storageDir } from "../folders";
 import { lyricsDispatcher } from "../lyrics";
 import { parseLrc, parseYrc } from "../lyrics/parse";
-import { sanitizeRelativePath } from "../util";
+import { sanitizeRelativePath } from "../util/path";
+import { sendIfAlive } from "../util/send";
 import {
   createDesktopLyricsPreview,
   window as desktopLyricsWindow,
@@ -327,7 +328,15 @@ registerCallHandler<[string, string], [boolean]>(
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, buf);
     LOGGER.debug({ path }, "Desktop lyrics preview rendered");
-    event.sender.send("channel.call", "player.onRenderLRCImageResult", path, true, width, height);
+    sendIfAlive(
+      event.sender,
+      "channel.call",
+      "player.onRenderLRCImageResult",
+      path,
+      true,
+      width,
+      height
+    );
     return [true];
   }
 );

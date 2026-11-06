@@ -18,7 +18,7 @@ use super::codec::{
     EVT_DELETE_ID, EVT_GLOBAL, EVT_GLOBAL_REMOVE, Iface, REQ_BIND, REQ_COMMIT, REQ_CREATE_SURFACE,
     REQ_DESTROY, REQ_GET_POINTER, REQ_GET_REGISTRY, REQ_GET_TOPLEVEL, REQ_GET_TOPLEVEL_DECORATION,
     REQ_GET_TOUCH, REQ_GET_XDG_SURFACE, REQ_SET_ICON, REQ_SET_TITLE, REQ_SET_WINDOW_GEOMETRY,
-    WL_POINTER_RELEASE, WL_SEAT_RELEASE, WL_TOUCH_RELEASE, WlMessage,
+    WL_OUTPUT_RELEASE, WL_POINTER_RELEASE, WL_SEAT_RELEASE, WL_TOUCH_RELEASE, WlMessage,
 };
 use super::inject;
 use super::state::WaylandConn;
@@ -38,10 +38,10 @@ pub(crate) enum Action {
 #[derive(Default)]
 pub(crate) struct Effects {
     pub(crate) button: Option<(u32, u32, u32, i32, i32)>,
+    pub(crate) button_is_touch: bool,
     /// A window whose surface could not take the layer role, by custom id.
     pub(crate) layer_shell_refused: Option<String>,
     pub(crate) entered: Vec<(u32, i32, i32)>,
-    pub(crate) arm_watchers_for: Vec<u32>,
     pub(crate) pointer_axes: Vec<(u32, u32)>,
     pub(crate) destroyed_surfaces: Vec<u32>,
 }
@@ -98,13 +98,13 @@ fn dispatch_request_inner(
         (Iface::XdgToplevelIconManager, REQ_SET_ICON) => shadow::on_set_icon(conn, msg),
         // `roles::dispatch` owns the role decision and only delegates here when
         // no window identity could change the outcome, so the id is unknown.
-        (Iface::XdgSurface, REQ_GET_TOPLEVEL) => objects::on_get_toplevel(fd, conn, msg, fx, None),
+        (Iface::XdgSurface, REQ_GET_TOPLEVEL) => objects::on_get_toplevel(fd, conn, msg, None),
         (Iface::XdgSurface, REQ_SET_WINDOW_GEOMETRY) => objects::on_popup_geometry(conn, msg),
         (Iface::WlSeat, WL_SEAT_RELEASE) => objects::on_destroy(fd, conn, msg, fx),
         (Iface::XdgWmBase, REQ_DESTROY) => objects::on_destroy(fd, conn, msg, fx),
-        (Iface::XdgToplevel, REQ_SET_TITLE) => title::on_set_title(conn, msg, fx),
+        (Iface::XdgToplevel, REQ_SET_TITLE) => title::on_set_title(Some(fd), conn, msg, fx),
         (Iface::XdgPopupShim, REQ_SET_TITLE) => {
-            let _ = title::on_set_title(conn, msg, fx);
+            let _ = title::on_set_title(Some(fd), conn, msg, fx);
             Action::Suppress
         }
         (Iface::XdgPopupShim, REQ_DESTROY) => objects::on_destroy(fd, conn, msg, fx),
@@ -128,6 +128,10 @@ fn dispatch_request_inner(
         }
         (Iface::WlPointer, WL_POINTER_RELEASE) => objects::on_pointer_release(conn, msg),
         (Iface::WlTouch, WL_TOUCH_RELEASE) => objects::on_touch_release(conn, msg),
+        // The object dies when this request is sent, not when the compositor
+        // answers with `delete_id`; a layer surface created in between must not
+        // name it.
+        (Iface::WlOutput, WL_OUTPUT_RELEASE) => objects::on_output_release(conn, msg),
         _ => Action::Forward,
     }
 }
@@ -151,6 +155,10 @@ pub(crate) fn dispatch_event(conn: &mut WaylandConn, msg: &WlMessage, fx: &mut E
         };
     }
 
+    if conn.ifaces.get(&msg.object_id) == Some(&Iface::WlOutput) {
+        return objects::on_output_event(conn, msg);
+    }
+
     if conn.layer_windows.contains_key(&msg.object_id) {
         return shadow::on_layer_event(conn, msg);
     }
@@ -165,6 +173,9 @@ pub(crate) fn dispatch_event(conn: &mut WaylandConn, msg: &WlMessage, fx: &mut E
     if conn.ifaces.get(&msg.object_id) == Some(&Iface::XdgPopupShim) {
         return objects::on_popup_event(conn, msg);
     }
+    if conn.ifaces.get(&msg.object_id) == Some(&Iface::XdgToplevel) {
+        return objects::on_toplevel_configure(conn, msg);
+    }
 
     Action::Forward
 }
@@ -172,7 +183,8 @@ pub(crate) fn dispatch_event(conn: &mut WaylandConn, msg: &WlMessage, fx: &mut E
 #[cfg(test)]
 mod tests {
     use super::super::codec::{
-        BTN_PRESSED, EVT_BUTTON, EVT_ENTER, EVT_LEAVE, EVT_TOUCH_DOWN, decorate_title,
+        BTN_PRESSED, EVT_BUTTON, EVT_ENTER, EVT_GLOBAL, EVT_LEAVE, EVT_OUTPUT_NAME, EVT_TOUCH_DOWN,
+        REQ_BIND, decorate_title,
     };
     use super::super::state::{WaylandConn, init_state};
     use super::super::test_support::{message, serial, wl_string, word};
@@ -244,6 +256,40 @@ mod tests {
     }
 
     #[test]
+    fn an_output_bind_resolves_the_global_name_to_its_object() {
+        let mut conn = WaylandConn::new();
+        let mut fx = Effects::default();
+        conn.ifaces.insert(9, Iface::WlRegistry);
+
+        // wl_registry.global(name, interface, version); the name is the
+        // `Display.id` Electron reports.
+        let mut global = word(77);
+        global.extend_from_slice(&wl_string("wl_output"));
+        global.extend_from_slice(&word(4));
+        dispatch_event(&mut conn, &message(9, EVT_GLOBAL, &global), &mut fx);
+        assert!(conn.outputs.contains_key(&77));
+
+        // wl_registry.bind(name, interface, version, new_id)
+        let mut bind = word(77);
+        bind.extend_from_slice(&wl_string("wl_output"));
+        bind.extend_from_slice(&word(4));
+        bind.extend_from_slice(&word(500));
+        dispatch_request(FD, &mut conn, &message(9, REQ_BIND, &bind), &mut fx);
+
+        assert_eq!(conn.ifaces.get(&500), Some(&Iface::WlOutput));
+        assert_eq!(super::super::outputs::object_for(&conn, 77), Some(500));
+
+        // wl_output.name("DP-1") arrives on the bound object and is filed
+        // against the display it was bound for.
+        dispatch_event(
+            &mut conn,
+            &message(500, EVT_OUTPUT_NAME, &wl_string("DP-1")),
+            &mut fx,
+        );
+        assert_eq!(conn.outputs[&77].name.as_deref(), Some("DP-1"));
+    }
+
+    #[test]
     fn device_creation_records_the_owning_seat() {
         let mut conn = WaylandConn::new();
         let mut fx = Effects::default();
@@ -303,7 +349,6 @@ mod tests {
         assert_eq!(conn.ifaces.get(&30), Some(&Iface::XdgToplevel));
         assert_eq!(conn.top_to_xdg.get(&30), Some(&20));
         assert_eq!(conn.wl_to_top.get(&10), Some(&30));
-        assert_eq!(fx.arm_watchers_for, vec![10], "cursor watchers arm on bind");
     }
 
     #[test]

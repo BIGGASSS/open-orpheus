@@ -1,15 +1,5 @@
 import { FSWatcher, watch } from "node:fs";
-import {
-  copyFile,
-  cp,
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 
 import { app, dialog, Notification } from "electron";
@@ -25,14 +15,10 @@ import {
   setDownloadPath,
 } from "../folders";
 import { registerCallHandler } from "../calls";
-import {
-  fileExists,
-  isFileNotFound,
-  isMusicFile,
-  isWritableDir,
-  normalizePath,
-  sanitizeRelativePath,
-} from "../util";
+import { fileExists, isFileNotFound, isWritableDir, move } from "../util/fs";
+import { isMusicFile } from "../util/musicFile";
+import { normalizePath, sanitizeRelativePath } from "../util/path";
+import { sendIfAlive } from "../util/send";
 import { webDb } from "../database";
 import {
   CacheTrackMeta,
@@ -40,7 +26,7 @@ import {
   type PlayCacheInfo,
 } from "../cache/PlayCacheManager";
 import createCacheManager, { lyricCacheManager, playCacheManager } from "../cache";
-import { toError } from "../../util";
+import { toError } from "@shared/util";
 import { commentToID3Json, ID3JsonToComment } from "../id3";
 import globalLogger from "../logger";
 
@@ -134,12 +120,8 @@ registerCallHandler<[string, string, string], [string, string]>(
           ignore: (path) => !isMusicFile(path),
         },
         async (eventType, filename) => {
-          if (
-            filename &&
-            !(await fileExists(join(downloadDir, filename))) &&
-            !event.sender.isDestroyed()
-          ) {
-            event.sender.send("channel.call", "storage.onfiledeleted", filename);
+          if (filename && !(await fileExists(join(downloadDir, filename)))) {
+            sendIfAlive(event.sender, "channel.call", "storage.onfiledeleted", filename);
           }
         }
       );
@@ -165,7 +147,8 @@ registerCallHandler<[string, string, boolean, string], void>(
     }
     try {
       const fileContent = await readFile(filePath);
-      event.sender.send(
+      sendIfAlive(
+        event.sender,
         "channel.call",
         "storage.onreadfromfiledone",
         taskId,
@@ -174,7 +157,7 @@ registerCallHandler<[string, string, boolean, string], void>(
       );
     } catch {
       // -2: Not Found
-      event.sender.send("channel.call", "storage.onreadfromfiledone", taskId, -2);
+      sendIfAlive(event.sender, "channel.call", "storage.onreadfromfiledone", taskId, -2);
     }
   }
 );
@@ -182,10 +165,18 @@ registerCallHandler<[string, string, boolean, string], void>(
 registerCallHandler<[string, string], void>("storage.execsql", async (event, taskId, sql) => {
   try {
     const execResult = await webDb.executeSql(sql);
-    event.sender.send("channel.call", "storage.onexecsqldone", taskId, ...execResult);
+    sendIfAlive(event.sender, "channel.call", "storage.onexecsqldone", taskId, ...execResult);
   } catch (error) {
     LOGGER.error({ sql, err: error }, "Error executing SQL");
-    event.sender.send("channel.call", "storage.onexecsqldone", taskId, 1, undefined, [0, 0, 0]);
+    sendIfAlive(
+      event.sender,
+      "channel.call",
+      "storage.onexecsqldone",
+      taskId,
+      1,
+      undefined,
+      [0, 0, 0]
+    );
   }
 });
 
@@ -194,10 +185,18 @@ registerCallHandler<[string, string], void>(
   async (event, taskId, sql) => {
     try {
       const execResult = await webDb.executeTransaction(sql);
-      event.sender.send("channel.call", "storage.onexecsqldone", taskId, ...execResult);
+      sendIfAlive(event.sender, "channel.call", "storage.onexecsqldone", taskId, ...execResult);
     } catch (error) {
       LOGGER.error({ sql, err: error }, "Error executing SQL transaction");
-      event.sender.send("channel.call", "storage.onexecsqldone", taskId, 1, undefined, [0, 0, 0]);
+      sendIfAlive(
+        event.sender,
+        "channel.call",
+        "storage.onexecsqldone",
+        taskId,
+        1,
+        undefined,
+        [0, 0, 0]
+      );
     }
   }
 );
@@ -220,9 +219,10 @@ registerCallHandler<[string, string, string, string, boolean, "abs" | "rel"], vo
 
     try {
       await writeFile(filePath, content, { flag: "w" });
-      event.sender.send("channel.call", "storage.onsavetofiledone", taskId, 0);
+      sendIfAlive(event.sender, "channel.call", "storage.onsavetofiledone", taskId, 0);
     } catch (error) {
-      event.sender.send(
+      sendIfAlive(
+        event.sender,
         "channel.call",
         "storage.onsavetofiledone",
         taskId,
@@ -249,14 +249,21 @@ registerCallHandler<[string, "abs" | "rel", "", string, boolean], void>(
 
     try {
       await rm(filePath);
-      event.sender.send("channel.call", "storage.ondeletefilesdone", taskId, 0, [filePath]);
+      sendIfAlive(event.sender, "channel.call", "storage.ondeletefilesdone", taskId, 0, [filePath]);
     } catch (err) {
       if (isFileNotFound(err)) {
-        event.sender.send("channel.call", "storage.ondeletefilesdone", taskId, 1, undefined);
+        sendIfAlive(
+          event.sender,
+          "channel.call",
+          "storage.ondeletefilesdone",
+          taskId,
+          1,
+          undefined
+        );
         return;
       }
       LOGGER.error({ file: filePath, err }, "Failed to delete file");
-      event.sender.send("channel.call", "storage.ondeletefilesdone", taskId, 2, undefined);
+      sendIfAlive(event.sender, "channel.call", "storage.ondeletefilesdone", taskId, 2, undefined);
     }
   }
 );
@@ -274,7 +281,7 @@ registerCallHandler<[string, { id: string; path: string }[], string], void>(
         };
       })
     );
-    event.sender.send("channel.call", "storage.oncheckfilesexist", taskId, true, results);
+    sendIfAlive(event.sender, "channel.call", "storage.oncheckfilesexist", taskId, true, results);
   }
 );
 
@@ -296,7 +303,7 @@ registerCallHandler<[string, boolean, string, number, string[]], void>(
 
       const flush = () => {
         if (batch.length > 0) {
-          event.sender.send("channel.call", "storage.ondownloadscanner", batch.splice(0));
+          sendIfAlive(event.sender, "channel.call", "storage.ondownloadscanner", batch.splice(0));
         }
       };
 
@@ -387,7 +394,14 @@ registerCallHandler<[string], void>("storage.getTempFile", async (event, songId)
   } catch (error) {
     LOGGER.error({ songId, err: error }, "Error reading temp file");
   }
-  event.sender.send("channel.call", "storage.ongettempfile", songId, content ? 0 : 404, content);
+  sendIfAlive(
+    event.sender,
+    "channel.call",
+    "storage.ongettempfile",
+    songId,
+    content ? 0 : 404,
+    content
+  );
 });
 
 registerCallHandler<[string, string, string], void>(
@@ -432,12 +446,12 @@ registerCallHandler<[string, "abs" | "rel", "", string], void>(
           path: join(filePath, dirent.name),
           type: dirent.isDirectory() ? "directory" : "file",
         }));
-        event.sender.send("channel.call", "storage.onlistfile", taskId, 0, files);
+        sendIfAlive(event.sender, "channel.call", "storage.onlistfile", taskId, 0, files);
       })
       .catch((error) => {
         LOGGER.error({ path: filePath }, "Error listing files: %s", error);
         // TODO: Some error code?
-        event.sender.send("channel.call", "storage.onlistfile", taskId, 1, []);
+        sendIfAlive(event.sender, "channel.call", "storage.onlistfile", taskId, 1, []);
       });
   }
 );
@@ -475,34 +489,64 @@ registerCallHandler<[string, string, string | "", string | "", AddId3Request], v
         trck !== undefined;
       let taggedFile: MusicFile | null = null;
       let imageFullPath: string | null = null;
-      if (hasID3Meta || imagePath || mediaInfo) {
-        taggedFile = await MusicFile.load(mediaPath);
 
-        if (hasID3Meta) {
-          taggedFile.album = talb;
-          taggedFile.title = tit2;
-          taggedFile.artist = typeof tpe1 === "string" ? tpe1 : tpe1.join(",");
-          taggedFile.discNumber = parseInt(tpos) || 0;
-          taggedFile.trackNumber = parseInt(trck) || 0;
-        }
+      // Throws when a tag has no mapping for a field.
+      // Must not lose the downloaded file: fall back to an untagged copy.
+      try {
+        if (hasID3Meta || imagePath || mediaInfo) {
+          taggedFile = await MusicFile.load(mediaPath);
 
-        if (imagePath) {
-          imageFullPath = normalizePath(downloadTemp, imagePath);
-          const mimeType = mime.getType(imageFullPath);
-          if (mimeType) {
+          if (hasID3Meta) {
+            taggedFile.album = talb;
+            taggedFile.title = tit2;
+            taggedFile.artist = typeof tpe1 === "string" ? tpe1 : tpe1.join(",");
+
+            const disc = Number.parseInt(tpos, 10);
+            const track = Number.parseInt(trck, 10);
+
+            // Track/disc are optional; skip them when absent or unsupported.
             try {
-              const imageData = await readFile(imageFullPath);
-              taggedFile.pictures = [new MetaPicture(mimeType, imageData)];
+              if (disc > 0) taggedFile.discNumber = disc;
             } catch (err) {
-              LOGGER.error(
-                { err: toError(err), mediaPath, imagePath: imageFullPath },
-                "Failed to insert cover art to media file"
-              );
+              LOGGER.warn({ err: toError(err), mediaPath }, "Failed to write disc number");
+            }
+            try {
+              if (track > 0) taggedFile.trackNumber = track;
+            } catch (err) {
+              LOGGER.warn({ err: toError(err), mediaPath }, "Failed to write track number");
+            }
+          }
+
+          if (imagePath) {
+            imageFullPath = normalizePath(downloadTemp, imagePath);
+            const mimeType = mime.getType(imageFullPath);
+            if (mimeType) {
+              try {
+                const imageData = await readFile(imageFullPath);
+                taggedFile.pictures = [new MetaPicture(mimeType, imageData)];
+              } catch (err) {
+                LOGGER.error(
+                  { err: toError(err), mediaPath, imagePath: imageFullPath },
+                  "Failed to insert cover art to media file"
+                );
+              }
+            }
+          }
+
+          if (mediaInfo) {
+            try {
+              taggedFile.comment = ID3JsonToComment(mediaInfo);
+            } catch (err) {
+              LOGGER.warn({ err: toError(err), mediaPath }, "Failed to write comment metadata");
             }
           }
         }
-
-        if (mediaInfo) taggedFile.comment = ID3JsonToComment(mediaInfo);
+      } catch (err) {
+        LOGGER.warn(
+          { err: toError(err), mediaPath },
+          "Failed to write metadata; saving the media file without tags"
+        );
+        taggedFile = null;
       }
 
       let relPath = id3Info.media_rel_path;
@@ -514,17 +558,28 @@ registerCallHandler<[string, string, string | "", string | "", AddId3Request], v
 
       const finalPath = normalizePath(download, relPath);
       await mkdir(dirname(finalPath), { recursive: true });
-      if (taggedFile) await taggedFile.save(finalPath);
-      else await cp(mediaPath, finalPath);
+      if (taggedFile) {
+        try {
+          await taggedFile.save(finalPath);
+        } catch (err) {
+          LOGGER.error(
+            { err: toError(err), mediaPath, finalPath },
+            "Failed to save tagged media; copying the media file without tags"
+          );
+          await cp(mediaPath, finalPath);
+        }
+      } else {
+        await cp(mediaPath, finalPath);
+      }
 
       if (imageFullPath) await rm(imageFullPath, { force: true });
       await rm(mediaPath, { force: true });
 
       LOGGER.debug({ taskId, path: relPath }, "ID3 tag written");
-      event.sender.send("channel.call", "storage.onaddid3done", taskId, 1, relPath);
+      sendIfAlive(event.sender, "channel.call", "storage.onaddid3done", taskId, 1, relPath);
     })().catch((err) => {
       LOGGER.error({ err: toError(err) }, "Failed to write ID3 tag");
-      event.sender.send("channel.call", "storage.onaddid3done", taskId, 0);
+      sendIfAlive(event.sender, "channel.call", "storage.onaddid3done", taskId, 0);
     });
   }
 );
@@ -552,7 +607,7 @@ async function handleFileBatch(
         await mkdir(dirname(dest), { recursive: true });
         try {
           if (type === "copy") await copyFile(src, dest);
-          else await rename(src, dest);
+          else await move(src, dest);
         } catch (err) {
           // Simply no-op if source doesn't exist
           if (!isFileNotFound(err)) {
@@ -562,7 +617,7 @@ async function handleFileBatch(
         processedCount++;
         lastSrc = src;
         lastDest = dest;
-        event.sender.send("channel.call", `storage.on${type}process`, {
+        sendIfAlive(event.sender, "channel.call", `storage.on${type}process`, {
           code: 0,
           state: srcPaths.length - processedCount,
           errcode: 0,
@@ -576,7 +631,7 @@ async function handleFileBatch(
     LOGGER.info({ type, count: srcPaths.length }, "Batch file operation finished");
   } catch (error) {
     LOGGER.error({ type, err: error }, "Error when doing batch file ops");
-    event.sender.send("channel.call", `storage.on${type}process`, {
+    sendIfAlive(event.sender, "channel.call", `storage.on${type}process`, {
       code: 1,
       state: srcPaths.length - processedCount,
       errcode: 1,

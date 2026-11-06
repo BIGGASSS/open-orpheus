@@ -1,9 +1,9 @@
 import { KeyvSqlite } from "@keyv/sqlite";
 import { Keyv } from "keyv";
 
-import { calculateDbSize } from "../util";
+import { calculateDbSize } from "../util/fs";
 import type { DatabaseSqliteDriver } from "../database/KeyvSqliteDriver";
-import { toError } from "../../util";
+import { toError } from "@shared/util";
 
 export default class HttpCacheStorage extends Keyv {
   private driver: KeyvSqlite;

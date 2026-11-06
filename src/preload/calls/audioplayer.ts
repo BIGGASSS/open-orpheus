@@ -3,7 +3,7 @@ import { player } from "../audioplayer";
 import { registerCallHandler } from "../calls";
 import { fireNativeCall } from "../channel";
 import { AudioPlayInfo } from "../Player";
-import { toError } from "../../util";
+import { toError } from "@shared/util";
 
 registerCallHandler<[string, AudioPlayInfo], void>("audioplayer.load", async (id, playInfo) => {
   LOGGER.debug(
@@ -15,6 +15,7 @@ registerCallHandler<[string, AudioPlayInfo], void>("audioplayer.load", async (id
     },
     "Audio load requested"
   );
+  ipcRenderer.send("player.playidupdate", playInfo.playId);
   await player.load(playInfo);
 });
 

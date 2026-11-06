@@ -6,7 +6,9 @@ import { app, BrowserWindow, Notification, powerSaveBlocker, screen, shell } fro
 
 import { getSystemFonts } from "@open-orpheus/ui";
 
-import { fileExists, normalizePath, sanitizeRelativePath } from "../util";
+import { fileExists } from "../util/fs";
+import { sendIfAlive } from "../util/send";
+import { normalizePath, sanitizeRelativePath } from "../util/path";
 import { registerCallHandler } from "../calls";
 import { getADDeviceId, getDeviceId } from "../device";
 import {
@@ -16,6 +18,7 @@ import {
   setPowerOffFailureHandler,
   setScheduledShutdown,
 } from "../shutdown";
+import { getDisplayUniqueId } from "@main/util/display";
 
 registerCallHandler<[string], [boolean]>("os.isFileExist", async (event, path) => {
   const filePath = isAbsolute(path) ? normalizePath(path) : sanitizeRelativePath("data", path);
@@ -35,7 +38,7 @@ registerCallHandler<[], void>("os.getDeviceInfo", (event) => {
   const mainWindow = BrowserWindow.fromWebContents(event.sender);
   if (!mainWindow) return;
 
-  event.sender.send("channel.call", "os.onGetDeviceInfo", {
+  sendIfAlive(event.sender, "channel.call", "os.onGetDeviceInfo", {
     app_platform: process.arch === "x64" ? "64" : "32",
     computername: os.hostname(),
     cpu: os.cpus()[0].model,
@@ -71,8 +74,35 @@ registerCallHandler<[string], [unknown]>("os.getSystemInfo", (event_, kind) => {
         },
       },
     ];
+  } else if (kind === "allMonitor") {
+    const primary = screen.getPrimaryDisplay();
+    return [
+      screen.getAllDisplays().map((v) => ({
+        id: getDisplayUniqueId(v),
+        name: v.label,
+        width: v.bounds.width,
+        height: v.bounds.height,
+        primary: v.id === primary.id,
+      })),
+    ];
   }
   return [undefined];
+});
+
+registerCallHandler<
+  [],
+  {
+    deviceId: string;
+    name: string;
+    isPrimary: boolean;
+  }[]
+>("os.getAllDisplayInfo", () => {
+  const primary = screen.getPrimaryDisplay();
+  return screen.getAllDisplays().map((v) => ({
+    deviceId: getDisplayUniqueId(v),
+    name: v.label,
+    isPrimary: v.id === primary.id,
+  }));
 });
 
 registerCallHandler<string[], [string, string[]]>(
@@ -263,4 +293,9 @@ registerCallHandler<[string], [string]>("os.getDiskSpace", async (event, path) =
       free: statResult.bfree * statResult.bsize,
     }),
   ];
+});
+
+registerCallHandler<[], [number]>("os.queryUserNotificationState", () => {
+  // TODO: Find out what's this
+  return [5];
 });

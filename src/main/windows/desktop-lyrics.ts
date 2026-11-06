@@ -11,18 +11,19 @@ import {
   LyricsStyle,
   ShowTranslate,
   TextAlignType,
-} from "$sharedTypes/desktop-lyrics";
+} from "@shared/types/desktop-lyrics";
 
 import { guiUrl, mainWindow, ManagedWindow, OnDemandWindow, switchWindowPolicy } from "../window";
-import { registerIpcHandlers } from "../../bridge/register";
-import { toError } from "../../util";
+import { sendIfAlive } from "../util/send";
+import { registerIpcHandlers } from "../bridge/register";
+import { toError } from "@shared/util";
 import type {
   DesktopLyricsContract,
   DesktopLyricsPreviewContract,
-} from "../../bridge/contracts/desktop-lyrics-api";
-import { registerInputRegionHandlers } from "../../bridge/common/inputRegion";
-import { registerLyricsHandlers } from "../../bridge/common/lyrics";
-import { registerSettingsHandlers } from "../../bridge/common/settings";
+} from "@shared/contracts/desktop-lyrics-api";
+import { registerInputRegionHandlers } from "../bridge/modules/inputRegion";
+import { registerLyricsHandlers } from "../bridge/modules/lyrics";
+import { registerSettingsHandlers } from "../bridge/modules/settings";
 import { events as settingsEvents, kv as settings } from "../settings";
 
 export const lyricsStyle: LyricsStyle = {
@@ -74,9 +75,7 @@ export function updateLyricsPlayInfo(info: DesktopLyricsPlayInfo | null) {
 }
 
 function performAction(action: string) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("channel.call", "player.ondesktoplyricaction", action);
-  }
+  sendIfAlive(mainWindow, "channel.call", "player.ondesktoplyricaction", action);
 }
 
 const desktopLyricsWindowOptions = {
@@ -105,8 +104,7 @@ function setupDesktopLyricsWindow(wnd: BrowserWindow): BrowserWindow {
   });
 
   wnd.on("blur", () => {
-    if (wnd.isDestroyed()) return;
-    wnd.webContents.send("desktopLyrics.blur");
+    sendIfAlive(wnd, "desktopLyrics.blur");
   });
 
   const de = getDesktopEnvironment();
@@ -131,14 +129,7 @@ function setupDesktopLyricsWindow(wnd: BrowserWindow): BrowserWindow {
         const scrCursor = screen.getCursorScreenPoint();
         [x, y] = [scrCursor.x, scrCursor.y];
       }
-      mainWindow.webContents.send(
-        "channel.call",
-        "player.ondesktopmousewheel",
-        modifier,
-        delta,
-        x,
-        y
-      );
+      sendIfAlive(mainWindow, "channel.call", "player.ondesktopmousewheel", modifier, delta, x, y);
     },
     changeOrientation: async () => {
       if (wnd.isDestroyed()) return;

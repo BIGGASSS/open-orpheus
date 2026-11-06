@@ -1,6 +1,7 @@
-import { BrowserWindow, dialog } from "electron";
+import { BrowserWindow, Notification } from "electron";
 
 import { registerCallHandler } from "../calls";
+import { sendIfAlive } from "../util/send";
 
 registerCallHandler<
   [
@@ -29,12 +30,12 @@ registerCallHandler<
       LOGGER.error("Failed to show update dialog: main window is unavailable");
       throw new Error("Main window's dead?");
     }
-    await dialog.showMessageBox(wnd, {
+    new Notification({
       title: "Open Orpheus",
-      message:
-        "由于更新包和 Open Orpheus 的特殊性，Open Orpheus 无法支持在网易云内更新，十分抱歉。",
-    });
-    event.sender.send(
+      body: "由于更新包和 Open Orpheus 的特殊性，Open Orpheus 无法支持在网易云内更新，十分抱歉。",
+    }).show();
+    sendIfAlive(
+      event.sender,
       "channel.call",
       "update.onupdateprogress",
       "", // currentFile
