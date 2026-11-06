@@ -15,8 +15,11 @@
 
 use super::super::codec::{Iface, WlMessage};
 use super::super::layer_shell;
+use super::super::outputs;
 use super::super::state::{LayerWindow, SurfaceRole, WaylandConn};
-use super::{Action, Effects};
+use super::Action;
+#[cfg(test)]
+use super::Effects;
 
 /// Track the interfaces the compositor advertises.
 pub(crate) fn on_registry_global(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
@@ -25,6 +28,9 @@ pub(crate) fn on_registry_global(conn: &mut WaylandConn, msg: &WlMessage) -> Act
         && let Some(version) = msg.u32_arg(after)
     {
         conn.globals.insert(name, (interface.to_string(), version));
+        if interface == outputs::INTERFACE {
+            outputs::advertised(conn, name);
+        }
         if interface == layer_shell::INTERFACE {
             conn.layer_shell_global = Some((name, version));
         }
@@ -36,6 +42,7 @@ pub(crate) fn on_registry_global(conn: &mut WaylandConn, msg: &WlMessage) -> Act
 pub(crate) fn on_registry_global_remove(conn: &mut WaylandConn, msg: &WlMessage) -> Action {
     if let Some(name) = msg.u32_arg(8) {
         conn.globals.remove(&name);
+        outputs::withdrawn(conn, name);
         if conn
             .layer_shell_global
             .is_some_and(|(global, _)| global == name)
@@ -63,7 +70,6 @@ pub(crate) fn convert_to_layer_surface(
     surface_id: u32,
     toplevel_id: u32,
     options: layer_shell::LayerShellOptions,
-    fx: &mut Effects,
 ) -> Option<Vec<Vec<u8>>> {
     let (global_name, version) = conn.layer_shell_global?;
     let registry_id = conn.registry_id?;
@@ -90,10 +96,20 @@ pub(crate) fn convert_to_layer_surface(
             shell_id,
         ));
     }
+    // A layer surface keeps the output it was created on. The policy names the
+    // display by the `Display.id` the application already has, so resolve it to
+    // the client's own `wl_output` object now. A display that is not bound is
+    // not an error: the null object lets the compositor choose one, exactly as
+    // it does when no output was requested.
+    let output_id = options
+        .output
+        .and_then(|display_id| outputs::object_for(conn, display_id))
+        .unwrap_or(0);
     messages.push(layer_shell::get_layer_surface(
         shell_id,
         toplevel_id,
         surface_id,
+        output_id,
         options.layer,
         &options.namespace,
     ));
@@ -133,8 +149,6 @@ pub(crate) fn convert_to_layer_surface(
         .insert(surface_id, SurfaceRole::Layer(options));
     conn.wl_to_layer.insert(surface_id, toplevel_id);
     conn.xdg_to_layer.insert(xdg_surface_id, toplevel_id);
-    // Cursor-enter capture is armed on the surface, exactly as for a toplevel.
-    fx.arm_watchers_for.push(surface_id);
 
     Some(messages)
 }
@@ -144,13 +158,15 @@ mod tests {
     use super::super::super::codec::{
         EVT_GLOBAL, EVT_GLOBAL_REMOVE, REQ_BIND, REQ_GET_LAYER_SURFACE, REQ_LAYER_SET_ANCHOR,
         REQ_LAYER_SET_EXCLUSIVE_ZONE, REQ_LAYER_SET_KEYBOARD_INTERACTIVITY, REQ_LAYER_SET_MARGIN,
-        REQ_LAYER_SET_SIZE,
+        REQ_LAYER_SET_SIZE, WL_OUTPUT_RELEASE,
     };
-    use super::super::super::layer_shell::LAYER_OVERLAY;
+    use super::super::super::layer_shell::{LAYER_OVERLAY, LayerShellOptions};
+    use super::super::super::outputs;
     use super::super::super::state::{self, SurfaceRole};
     use super::super::super::test_support::{
         Registered, connected, fixture, header, message, options, u32_at, wl_string, word,
     };
+    use super::super::dispatch_request;
     use super::*;
 
     #[test]
@@ -169,6 +185,30 @@ mod tests {
         );
         assert_eq!(conn.layer_shell_global, Some((63, 5)));
         assert!(conn.globals.contains_key(&63));
+    }
+
+    #[test]
+    fn output_globals_are_registered_by_display_id_and_withdrawn() {
+        let (_guard, mut conn) = fixture();
+
+        let mut body = word(77);
+        body.extend_from_slice(&wl_string("wl_output"));
+        body.extend_from_slice(&word(4));
+        on_registry_global(&mut conn, &message(5, EVT_GLOBAL, &body));
+
+        // The global name is the `Display.id` Electron reports.
+        assert!(conn.outputs.contains_key(&77));
+        assert_eq!(
+            conn.globals
+                .get(&77)
+                .map(|(interface, version)| (interface.as_str(), *version)),
+            Some(("wl_output", 4))
+        );
+
+        // A withdrawn output cannot be placed on any more.
+        on_registry_global_remove(&mut conn, &message(5, EVT_GLOBAL_REMOVE, &word(77)));
+        assert!(!conn.outputs.contains_key(&77));
+        assert!(!conn.globals.contains_key(&77));
     }
 
     /// Availability is read from the live connections, so a compositor that
@@ -220,9 +260,7 @@ mod tests {
     #[test]
     fn a_conversion_emits_the_layer_role_and_caches_it_for_the_surface() {
         let (_guard, mut conn) = fixture();
-        let mut fx = Effects::default();
-
-        let messages = convert_to_layer_surface(&mut conn, 20, 10, 30, options(), &mut fx)
+        let messages = convert_to_layer_surface(&mut conn, 20, 10, 30, options())
             .expect("the conversion is sendable");
 
         // bind, get_layer_surface, then the five state requests.
@@ -262,23 +300,91 @@ mod tests {
             conn.surface_roles.get(&10),
             Some(SurfaceRole::Layer(cached)) if *cached == options()
         ));
-        assert_eq!(fx.arm_watchers_for, vec![10]);
+    }
+
+    #[test]
+    fn a_named_display_is_resolved_to_the_clients_output_object() {
+        let (_guard, mut conn) = fixture();
+        outputs::advertised(&mut conn, 77);
+        outputs::bound(&mut conn, 77, 60);
+        let requested = LayerShellOptions {
+            output: Some(77),
+            ..options()
+        };
+
+        let messages = convert_to_layer_surface(&mut conn, 20, 10, 30, requested)
+            .expect("the conversion is sendable");
+
+        assert_eq!(
+            u32_at(&messages[1], 16),
+            60,
+            "the client's wl_output object, not the Display.id"
+        );
+        // The requested display stays on the cached role, so a later surface
+        // applies it again.
+        assert!(matches!(
+            conn.surface_roles.get(&10),
+            Some(SurfaceRole::Layer(cached)) if cached.output == Some(77)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_display_falls_back_to_the_compositors_choice() {
+        let (_guard, mut conn) = fixture();
+        let requested = LayerShellOptions {
+            output: Some(99),
+            ..options()
+        };
+
+        let messages = convert_to_layer_surface(&mut conn, 20, 10, 30, requested)
+            .expect("the conversion is sendable");
+
+        assert_eq!(u32_at(&messages[1], 16), 0, "the null output");
+    }
+
+    #[test]
+    fn a_released_output_is_not_used_before_its_delete_id_arrives() {
+        let (_guard, mut conn) = fixture();
+        outputs::advertised(&mut conn, 77);
+        outputs::bound(&mut conn, 77, 60);
+        conn.ifaces.insert(60, Iface::WlOutput);
+
+        // `release` is a destructor: the object is gone as soon as the request
+        // is sent. No `delete_id` has arrived yet, and the layer surface must
+        // still not name the released object.
+        let action = dispatch_request(
+            42,
+            &mut conn,
+            &message(60, WL_OUTPUT_RELEASE, &[]),
+            &mut Effects::default(),
+        );
+        assert!(matches!(action, Action::Forward));
+        assert_eq!(outputs::object_for(&conn, 77), None);
+
+        let requested = LayerShellOptions {
+            output: Some(77),
+            ..options()
+        };
+        let messages = convert_to_layer_surface(&mut conn, 20, 10, 30, requested)
+            .expect("the conversion is sendable");
+
+        assert_eq!(
+            u32_at(&messages[1], 16),
+            0,
+            "the released object is never named"
+        );
     }
 
     #[test]
     fn a_second_conversion_reuses_the_bound_shell_object() {
         let (_guard, mut conn) = fixture();
-        let mut fx = Effects::default();
-
-        let first =
-            convert_to_layer_surface(&mut conn, 20, 10, 30, options(), &mut fx).expect("bound");
+        let first = convert_to_layer_surface(&mut conn, 20, 10, 30, options()).expect("bound");
         assert_eq!(header(&first[0]).1, REQ_BIND);
 
         conn.ifaces.insert(11, Iface::WlSurface);
         conn.ifaces.insert(21, Iface::XdgSurface);
         conn.xdg_to_wl.insert(21, 11);
-        let second =
-            convert_to_layer_surface(&mut conn, 21, 11, 31, options(), &mut fx).expect("converted");
+        let second = convert_to_layer_surface(&mut conn, 21, 11, 31, options()).expect("converted");
 
         // No second bind: the shell object the proxy bound is reused.
         assert_eq!(second.len(), 6);
@@ -289,20 +395,18 @@ mod tests {
     #[test]
     fn conversion_needs_a_global_a_registry_and_a_spare_id() {
         let (_guard, _conn) = fixture();
-        let mut fx = Effects::default();
-
         let mut conn = connected();
         conn.layer_shell_global = None;
-        assert!(convert_to_layer_surface(&mut conn, 20, 10, 30, options(), &mut fx).is_none());
+        assert!(convert_to_layer_surface(&mut conn, 20, 10, 30, options()).is_none());
         assert!(conn.layer_windows.is_empty());
 
         let mut conn = connected();
         conn.registry_id = None;
-        assert!(convert_to_layer_surface(&mut conn, 20, 10, 30, options(), &mut fx).is_none());
+        assert!(convert_to_layer_surface(&mut conn, 20, 10, 30, options()).is_none());
 
         let mut conn = connected();
         conn.stolen_ids.clear();
-        assert!(convert_to_layer_surface(&mut conn, 20, 10, 30, options(), &mut fx).is_none());
+        assert!(convert_to_layer_surface(&mut conn, 20, 10, 30, options()).is_none());
 
         // Nothing was half-applied, so the surface is still undecided.
         assert!(conn.surface_roles.is_empty());
@@ -312,7 +416,7 @@ mod tests {
     #[test]
     fn destroying_the_surface_forgets_its_layer_role() {
         let (_guard, mut conn) = fixture();
-        convert_to_layer_surface(&mut conn, 20, 10, 30, options(), &mut Effects::default())
+        convert_to_layer_surface(&mut conn, 20, 10, 30, options())
             .expect("the conversion is sendable");
         assert!(matches!(
             conn.surface_roles.get(&10),

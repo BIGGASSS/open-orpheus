@@ -12,6 +12,9 @@ pub(crate) enum Iface {
     WlSeat,
     WlPointer,
     WlTouch,
+    /// A `wl_output` the client bound. Kept so a layer surface can name the
+    /// output the application asked for.
+    WlOutput,
     WlSurface,
     XdgWmBase,
     XdgPositioner,
@@ -62,6 +65,8 @@ pub(crate) const REQ_SET_INPUT_REGION: u16 = 5;
 pub(crate) const REQ_COMMIT: u16 = 6;
 pub(crate) const WL_POINTER_RELEASE: u16 = 1;
 pub(crate) const WL_SEAT_RELEASE: u16 = 3;
+/// `wl_output.release` (v3): the object is gone as soon as this is sent.
+pub(crate) const WL_OUTPUT_RELEASE: u16 = 0;
 pub(crate) const REQ_DESTROY: u16 = 0;
 pub(crate) const REQ_REGION_DESTROY: u16 = 0;
 pub(crate) const REQ_REGION_ADD: u16 = 1;
@@ -80,6 +85,10 @@ pub(crate) const EVT_POPUP_DONE: u16 = 1;
 // wl_registry events
 pub(crate) const EVT_GLOBAL: u16 = 0;
 pub(crate) const EVT_GLOBAL_REMOVE: u16 = 1;
+
+// wl_output events
+/// `wl_output.name` (v4): the compositor's name for the output, e.g. `DP-1`.
+pub(crate) const EVT_OUTPUT_NAME: u16 = 4;
 
 // xdg_toplevel events
 pub(crate) const EVT_TOPLEVEL_CONFIGURE: u16 = 0;
@@ -219,6 +228,26 @@ impl WlMessage {
 
     pub(crate) fn u32_arg(&self, offset: usize) -> Option<u32> {
         ru32(&self.body, offset)
+    }
+
+    /// Parses a Wayland array of u32 values at `offset`.
+    ///
+    /// The wire length of a Wayland array is in **bytes**, not elements.
+    pub(crate) fn u32_array_arg(&self, offset: usize) -> Option<Vec<u32>> {
+        let byte_len = self.u32_arg(offset)? as usize;
+        if !byte_len.is_multiple_of(4) {
+            return None;
+        }
+        let start = offset + 4;
+        let end = start.checked_add(byte_len)?;
+        let body = self.body.get(start..end)?;
+        Some(
+            body.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| u32::from_ne_bytes(*chunk))
+                .collect(),
+        )
     }
 
     pub(crate) fn fixed_arg(&self, offset: usize) -> Option<i32> {
@@ -412,6 +441,15 @@ mod tests {
         unterminated.extend_from_slice(b"abcd");
 
         assert_eq!(parse_wl_str(&unterminated, 0), Some(("abcd", 8)));
+    }
+
+    #[test]
+    fn u32_arrays_use_byte_length() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&4u32.to_ne_bytes()); // four bytes: one element
+        body.extend_from_slice(&4u32.to_ne_bytes()); // ACTIVATED
+        let msg = WlMessage::new(11, 0, body);
+        assert_eq!(msg.u32_array_arg(0), Some(vec![4]));
     }
 
     #[test]

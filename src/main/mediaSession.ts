@@ -1,6 +1,7 @@
 import os from "node:os";
+import { isPlaybackMode } from "@shared/playbackMode";
 
-import { toError } from "../util";
+import { toError } from "@shared/util";
 import { events as lifecycleEvents, registerShutdownTask } from "./lifecycle";
 import { resolveCoverUrl } from "./playback/artwork";
 import PlaybackController from "./playback/PlaybackController";
@@ -20,6 +21,9 @@ export interface Metadata {
   artist: string;
   album: string;
 }
+
+/** Unique play ID for current track play session. */
+export let playId: string | null = null;
 
 /** Single source of truth for playback state (see playback/PlaybackController). */
 export const playbackController = new PlaybackController();
@@ -105,6 +109,12 @@ export async function createMediaSession(): Promise<void> {
   playbackController.on("durationchanged", ({ data }) => adapter.onDuration(data));
   playbackController.on("ratechanged", ({ data }) => adapter.onRate(data));
   playbackController.on("volumechanged", ({ data }) => adapter.onVolume(data));
+  playbackController.on("modechanged", ({ data }) => adapter.onPlaybackMode?.(data));
+  // The renderer may have reported its initial mode while the platform adapter
+  // was still loading.
+  if (playbackController.snapshot.playbackMode !== null) {
+    adapter.onPlaybackMode?.(playbackController.snapshot.playbackMode);
+  }
 
   registerShutdownTask({ name: "media-session", run: disposeMediaSession });
 }
@@ -163,6 +173,9 @@ export const mediaSession = {
 };
 
 lifecycleEvents.on("mainwindowcreated", ({ data: mainWindow }) => {
+  mainWindow.webContents.ipc.on("player.playidupdate", (e, id) => {
+    playId = id;
+  });
   mainWindow.webContents.ipc.on("player.timeupdate", (e, time) => {
     playbackController.applyPosition(time);
   });
@@ -185,5 +198,8 @@ lifecycleEvents.on("mainwindowcreated", ({ data: mainWindow }) => {
 
   mainWindow.webContents.ipc.on("player.volumechange", (e, volume) => {
     playbackController.applyVolume(volume);
+  });
+  mainWindow.webContents.ipc.on("player.playbackmodechange", (e, mode) => {
+    if (isPlaybackMode(mode)) playbackController.applyPlaybackMode(mode);
   });
 });
